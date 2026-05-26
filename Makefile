@@ -47,6 +47,11 @@ push-deploy:
 # ---------------------------------------------------------
 # UTILS
 # ---------------------------------------------------------
+
+# Attach to the running development container
+attach:
+	@docker attach opensot_dev_instance
+
 # Stops and removes all containers and networks
 down:
 	docker compose down

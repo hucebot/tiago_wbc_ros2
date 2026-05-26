@@ -11,7 +11,8 @@ x-shared-config: &shared-config
     - ROS_DOMAIN_ID=2
     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     - DDS_ENV=${DDS_ENV:-local}
-    - CYCLONEDDS_URI=/home/ros2_ws/cyclonedds_${DDS_ENV:-local}.xml
+    # CHANGE THIS LINE:
+    - CYCLONEDDS_URI=/home/configs/cyclonedds_${DDS_ENV:-local}.xml
 
 services:
   # DEPLOYMENT SERVICE (Uses Image)
