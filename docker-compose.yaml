@@ -1,0 +1,41 @@
+version: '3.8'
+
+# Shared configs
+x-shared-config: &shared-config
+  network_mode: "host"
+  privileged: true
+  ipc: host
+  pid: host
+  environment:
+    - DISPLAY=${DISPLAY}
+    - ROS_DOMAIN_ID=2
+    - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    - CYCLONEDDS_URI=/home/ros2_ws/cyclonedds_${DDS_ENV:-local}.xml
+
+services:
+  # DEPLOYMENT SERVICE (Uses Image)
+  opensot_deploy:
+    <<: *shared-config
+    image: tiago_wbc_ros2:${TAG:-latest}
+    container_name: opensot_deploy_instance
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./configs/cyclonedds_robot.xml:/home/ros2_ws/cyclonedds_robot.xml:ro
+      - ./configs/cyclonedds_local.xml:/home/ros2_ws/cyclonedds_local.xml:ro
+
+  # DEVELOPMENT SERVICE (Uses Build + Local Mounts)
+  opensot_dev:
+    <<: *shared-config
+    image: tiago_wbc_ros2:${TAG:-latest}-dev
+    container_name: opensot_dev_instance
+    build:
+      context: .
+      dockerfile: .ci/Dockerfile
+      target: dev
+    tty: true
+    stdin_open: true
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./configs/cyclonedds_robot.xml:/home/ros2_ws/cyclonedds_robot.xml:ro
+      - ./configs/cyclonedds_local.xml:/home/ros2_ws/cyclonedds_local.xml:ro
+      - ./src:/home/forest_ws/src
