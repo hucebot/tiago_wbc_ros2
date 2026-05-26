@@ -10,6 +10,7 @@ x-shared-config: &shared-config
     - DISPLAY=${DISPLAY}
     - ROS_DOMAIN_ID=2
     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    - DDS_ENV=${DDS_ENV:-local}
     - CYCLONEDDS_URI=/home/ros2_ws/cyclonedds_${DDS_ENV:-local}.xml
 
 services:
@@ -20,8 +21,7 @@ services:
     container_name: opensot_deploy_instance
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./configs/cyclonedds_robot.xml:/home/ros2_ws/cyclonedds_robot.xml:ro
-      - ./configs/cyclonedds_local.xml:/home/ros2_ws/cyclonedds_local.xml:ro
+      - ./configs/:/home/configs:ro
 
   # DEVELOPMENT SERVICE (Uses Build + Local Mounts)
   opensot_dev:
@@ -36,6 +36,5 @@ services:
     stdin_open: true
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./configs/cyclonedds_robot.xml:/home/ros2_ws/cyclonedds_robot.xml:ro
-      - ./configs/cyclonedds_local.xml:/home/ros2_ws/cyclonedds_local.xml:ro
+      - ./configs/:/home/configs:ro
       - ./src:/home/forest_ws/src
