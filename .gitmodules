@@ -1,7 +1,7 @@
 [submodule "external/OpenSoT"]
 	path = external/OpenSoT
 	url = https://github.com/hucebot/OpenSoT.git
-	branch = 4.0-devel_ros2
+	branch = ros2
 [submodule "external/mujoco_menagerie"]
 	path = external/mujoco_menagerie
 	url = https://github.com/google-deepmind/mujoco_menagerie.git
