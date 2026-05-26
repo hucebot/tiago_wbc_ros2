@@ -1,0 +1,35 @@
+<CycloneDDS>
+    <Domain>
+      <General>
+        <AllowMulticast>false</AllowMulticast>
+        <MaxMessageSize>1400B</MaxMessageSize>
+        <Interfaces>
+          <NetworkInterface name="wlan0" priority="2" presence_required="false" />
+          <NetworkInterface name="br0" priority="1" presence_required="false" />
+          <NetworkInterface name="lo" priority="0" />
+        </Interfaces>
+      </General>
+      <Discovery>
+        <ParticipantIndex>auto</ParticipantIndex>
+        <Peers>
+          <Peer Address="localhost" />
+          <!--<Peer
+          Address="10.68.0.209"/>-->
+          <Peer Address="10.68.0.206" />
+          <Peer Address="10.68.0.210" />
+          <Peer Address="10.68.0.208" />
+          <Peer Address="10.68.0.142" />
+        </Peers>
+        <MaxAutoParticipantIndex>500</MaxAutoParticipantIndex>
+      </Discovery>
+      <Internal>
+        <Watermarks>
+          <WhcHigh>2000kB</WhcHigh>
+        </Watermarks>
+      </Internal>
+      <Tracing>
+        <Verbosity>config</Verbosity>
+        <OutputFile>${HOME}/.ros/log/cdds.log</OutputFile>
+      </Tracing>
+    </Domain>
+  </CycloneDDS>
