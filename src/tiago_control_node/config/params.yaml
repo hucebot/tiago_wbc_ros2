@@ -1,0 +1,27 @@
+tiago_dual_control:
+  ros__parameters:
+    control_dt: 0.025 # 100Hz
+
+    # Task Gains (Lambdas)
+    lambdas:
+      gripper_left: 0.3
+      gripper_right: 0.3
+      postural: 0.05
+      base: 0.05
+
+    # Frame Names
+    frames:
+      world: "world"
+      base_link: "base_link"
+      torso_link: "base_link"
+      left_gripper: "gripper_left_grasping_link"
+      right_gripper: "gripper_right_grasping_link"
+
+    base_frames:
+      right_arm_task: "base_link"
+      left_arm_task: "base_link"
+      base_task: "world"
+
+    joy:
+      scale_linear: 0.2
+      scale_angular: 0.3
