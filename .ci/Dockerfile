@@ -41,7 +41,7 @@ RUN git clone --depth 1 -b devel https://github.com/coal-library/coal.git && \
     mkdir -p /home/forest_ws/build/coal && cd /home/forest_ws/build/coal && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release -DBUILD_PYTHON_INTERFACE=OFF -DCOAL_HAS_QHULL=ON ../../src/coal && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/coal /home/forest_ws/src/coal
 
 # PINOCCHIO
@@ -51,7 +51,7 @@ RUN git clone --depth 1 -b v3.8.0 https://github.com/stack-of-tasks/pinocchio.gi
     mkdir -p /home/forest_ws/build/pinocchio && cd /home/forest_ws/build/pinocchio && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release -DBUILD_WITH_URDF_SUPPORT=ON -DBUILD_WITH_COLLISION_SUPPORT=OFF -DBUILD_TESTING=FALSE -DBUILD_PYTHON_INTERFACE=OFF ../../src/pinocchio && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/pinocchio /home/forest_ws/src/pinocchio
 
 # xbot2_interface
@@ -60,7 +60,7 @@ RUN git clone --depth 1 -b devel https://github.com/hucebot/xbot2_interface.git 
     mkdir -p /home/forest_ws/build/xbot2_interface && cd /home/forest_ws/build/xbot2_interface && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DXBOT2_IFC_BUILD_TESTS=ON -DXBOT2_IFC_BUILD_ROS=OFF -DXBOT2_IFC_BUILD_ROS2=OFF -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release ../../src/xbot2_interface && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/xbot2_interface /home/forest_ws/src/xbot2_interface
 
 # osqp
@@ -70,7 +70,7 @@ RUN git clone https://github.com/oxfordcontrol/osqp.git && \
     mkdir -p /home/forest_ws/build/osqp && cd /home/forest_ws/build/osqp && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DDLONG=OFF -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release ../../src/osqp && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/osqp /home/forest_ws/src/osqp
 
 # proxQP
@@ -80,7 +80,7 @@ RUN git clone https://github.com/Simple-Robotics/proxsuite.git && \
     mkdir -p /home/forest_ws/build/proxsuite && cd /home/forest_ws/build/proxsuite && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DBUILD_WITH_VECTORIZATION_SUPPORT=OFF -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release ../../src/proxsuite && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/proxsuite /home/forest_ws/src/proxsuite
 
 # qpSWIFT
@@ -89,7 +89,7 @@ RUN git clone --depth 1 https://github.com/qpSWIFT/qpSWIFT.git && \
     mkdir -p /home/forest_ws/build/qpSWIFT && cd /home/forest_ws/build/qpSWIFT && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release ../../src/qpSWIFT && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/qpSWIFT /home/forest_ws/src/qpSWIFT
 
 # roboptim (NO --depth 1 ALLOWED! The CMake system needs full git history for versioning)
@@ -98,28 +98,28 @@ RUN git clone https://github.com/hucebot/roboptim-core.git && cd roboptim-core &
     mkdir -p /home/forest_ws/build/roboptim-core && cd /home/forest_ws/build/roboptim-core && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install ../../src/roboptim-core && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/roboptim-core /home/forest_ws/src/roboptim-core
 
 RUN git clone https://github.com/hucebot/roboptim-core-plugin-ipopt.git && cd roboptim-core-plugin-ipopt && git submodule update --init && \
     mkdir -p /home/forest_ws/build/roboptim-core-plugin-ipopt && cd /home/forest_ws/build/roboptim-core-plugin-ipopt && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DDISABLE_TESTS=ON ../../src/roboptim-core-plugin-ipopt && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/roboptim-core-plugin-ipopt /home/forest_ws/src/roboptim-core-plugin-ipopt
 
 RUN git clone https://github.com/hucebot/roboptim-capsule.git && cd roboptim-capsule && git submodule update --init && \
     mkdir -p /home/forest_ws/build/roboptim-capsule && cd /home/forest_ws/build/roboptim-capsule && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install ../../src/roboptim-capsule && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/roboptim-capsule /home/forest_ws/src/roboptim-capsule
 
 RUN git clone https://github.com/hucebot/robot_capsule_generator.git && \
     mkdir -p /home/forest_ws/build/robot_capsule_generator && cd /home/forest_ws/build/robot_capsule_generator && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install ../../src/robot_capsule_generator && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/robot_capsule_generator /home/forest_ws/src/robot_capsule_generator
 
 RUN echo "export LD_LIBRARY_PATH=/home/forest_ws/install/lib/roboptim-core/:$LD_LIBRARY_PATH" >> ~/.bashrc
@@ -130,7 +130,7 @@ RUN git clone --depth 1 https://github.com/deepmind/mujoco.git && \
     mkdir -p /home/forest_ws/build/mujoco && cd /home/forest_ws/build/mujoco && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
     cmake -DMUJOCO_BUILD_EXAMPLES=OFF -DMUJOCO_BUILD_TESTS=OFF ../../src/mujoco && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/build/mujoco /home/forest_ws/src/mujoco
 
 # ROS2 Workspace (Description/Robot packages)
@@ -153,7 +153,7 @@ RUN apt-get update && \
     rosdep install -y -r -q --from-paths src --ignore-src --rosdistro humble && \
     rm -rf /var/lib/apt/lists/*
 
-RUN source /opt/ros/humble/setup.bash && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+RUN source /opt/ros/humble/setup.bash && colcon build --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log
 
 RUN echo "source /home/ros2_ws/install/local_setup.bash" >> ~/.bashrc
@@ -178,7 +178,7 @@ RUN source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
           -DCMAKE_BUILD_TYPE:STRING=Release \
           -DCMAKE_PREFIX_PATH="/home/forest_ws/install;/opt/ros/humble" \
           ../OpenSoT && \
-    make -j$(nproc) && make install && \
+    make -j2 && make install && \
     rm -rf /home/forest_ws/code/build
 
 # Environment for the Entrypoint
@@ -198,7 +198,7 @@ COPY ./src /home/forest_ws/src
 # Build ROS 2 Package
 WORKDIR /home/forest_ws
 RUN source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
-    colcon build --packages-select tiago_control_node --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+    colcon build --parallel-workers 2 --packages-select tiago_control_node --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log
 
 # Runtime Setup
