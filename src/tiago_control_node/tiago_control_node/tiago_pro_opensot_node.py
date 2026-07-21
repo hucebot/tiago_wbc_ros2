@@ -326,7 +326,11 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
 
     # --- Constraints ---
     qmin, qmax = model.getJointLimits()
-    qlims = JointLimits(model, qmax, qmin)
+    # add a padding to avoid making the robot go into emergency
+    qmax_padded = qmax - np.ones_like(qmax) * 0.5 
+    qmin_padded = qmin + np.ones_like(qmax) * 0.5
+    
+    qlims = JointLimits(model, qmax_padded, qmin_padded)
     dqlims = VelocityLimits(model, model.getVelocityLimits(), node.dt)
 
     base_con = Cartesian("Base_Con", model, node.frame_base, node.frame_world)

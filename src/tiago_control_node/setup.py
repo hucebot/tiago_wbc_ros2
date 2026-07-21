@@ -27,6 +27,8 @@ setup(
             'cartesian_interface_node = tiago_control_node.cartesian_interface_node:main',
             'tiago_pro_opensot_node = tiago_control_node.tiago_pro_opensot_node:main',
             'dummy_obstacles = tiago_control_node.dummy_obstacles:main',
+            'pose_transformer_node = tiago_control_node.pose_transformer:main',
+            
         ],
     },
 )

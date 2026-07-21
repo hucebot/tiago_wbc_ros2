@@ -137,6 +137,14 @@ def generate_launch_description():
         actions=[node_solver_dual, node_solver_pro, node_cartesian_interface]
     )
 
+    pose_transformer_node = Node(
+        package='tiago_control_node',
+        executable='pose_transformer_node',
+        name='pose_transformer_node',
+        output='screen',
+        parameters=[]
+    )
+
     # Final Launch Description
     return LaunchDescription([
         robot_model_arg,
@@ -144,5 +152,6 @@ def generate_launch_description():
         node_real_rsp,
         node_opensot_rsp,
         node_rviz,
-        delayed_nodes
+        delayed_nodes,
+        pose_transformer_node
     ])
