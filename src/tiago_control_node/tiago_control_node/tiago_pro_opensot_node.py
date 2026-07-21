@@ -46,8 +46,8 @@ class TiagoOpenSoTNode(Node):
             ('frames.left_gripper', "gripper_left_grasping_link"),
             ('frames.base_link', "base_link"),
             ('frames.world', "world"),
-            ('base_frames.right_arm_task', "base_link"),
-            ('base_frames.left_arm_task', "base_link"),
+            ('base_frames.right_arm_task', "torso_lift_link"),
+            ('base_frames.left_arm_task', "torso_lift_link"),
             ('base_frames.base_task', "world")
         ]
         self.declare_parameters(namespace='', parameters=param_defaults)

@@ -75,8 +75,8 @@ class CartesianInterface(Node):
             self.frames = {
                 "right": "gripper_right_grasping_link",
                 "left": "gripper_left_grasping_link",
-                "base_right": "base_link",
-                "base_left": "base_link",
+                "base_right": "torso_lift_link",
+                "base_left": "torso_lift_link",
             }
             self.gripper_open_pos = 0.0
             self.gripper_closed_pos = 0.8
@@ -85,8 +85,8 @@ class CartesianInterface(Node):
             self.frames = {
                 "right": "gripper_right_grasping_frame",
                 "left": "gripper_left_grasping_frame",
-                "base_right": "base_link",
-                "base_left": "base_link",
+                "base_right": "torso_lift_link",
+                "base_left": "torso_lift_link",
             }
             self.gripper_open_pos = 0.0
             self.gripper_closed_pos = 0.08
