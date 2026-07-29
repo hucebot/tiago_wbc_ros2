@@ -6,7 +6,7 @@ import json
 import array
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from tiago_control_node.utils import tiago_pro_home_config as home_config, ObstacleData
+from tiago_control_node.utils import MULTIPLE_HOME_CONFIGS_PRO as home_configs, ObstacleData
 
 # ROS 2 Interfaces
 import rclpy
@@ -38,16 +38,16 @@ class TiagoOpenSoTNode(Node):
         # --- Parameters ---
         param_defaults = [
             ('control_dt', 0.01),
-            ('lambdas.gripper_right', 0.03),
-            ('lambdas.gripper_left', 0.03),
+            ('lambdas.gripper_right', 0.1),
+            ('lambdas.gripper_left', 0.1),
             ('lambdas.postural', 0.01),
             ('lambdas.base', 0.1),
             ('frames.right_gripper', "gripper_right_grasping_link"),
             ('frames.left_gripper', "gripper_left_grasping_link"),
             ('frames.base_link', "base_link"),
             ('frames.world', "world"),
-            ('base_frames.right_arm_task', "torso_lift_link"),
-            ('base_frames.left_arm_task', "torso_lift_link"),
+            ('base_frames.right_arm_task', "base_link"),
+            ('base_frames.left_arm_task', "base_link"),
             ('base_frames.base_task', "world")
         ]
         self.declare_parameters(namespace='', parameters=param_defaults)
@@ -216,6 +216,16 @@ class TiagoOpenSoTNode(Node):
 
     def from_state_msg(self, msg, model):
         """Sets the OpenSoT model configuration based on the hardware's real state."""
+
+        # convert dict of home_configs to home config:
+        
+        home_config_dict = home_configs["pick"]
+        print(home_config_dict)
+        home_config = np.array([])
+        for value in home_config_dict.values():
+            print(value)
+            home_config = np.append(home_config, value)
+        
         q = copy.copy(home_config)
 
         # OpenSoT local frame starts at [0,0,0] - opensot/world handles the map offset
@@ -240,7 +250,7 @@ class TiagoOpenSoTNode(Node):
                 idx += 1
         return q
 
-    def wait_for_initial_state(self, timeout=1.0):
+    def wait_for_initial_state(self, timeout=4.0):
         """Waits for the initial state of the robot hardware to synchronize the solver."""
         self.get_logger().info(f"Waiting for initial hardware state (timeout: {timeout}s)...")
 
@@ -327,9 +337,10 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     # --- Constraints ---
     qmin, qmax = model.getJointLimits()
     # add a padding to avoid making the robot go into emergency
-    qmax_padded = qmax - np.ones_like(qmax) * 0.5 
-    qmin_padded = qmin + np.ones_like(qmax) * 0.5
     
+    qmax_padded = qmax - (qmax-qmin) * 0.025 
+    qmin_padded = qmin + (qmax-qmin) * 0.025
+
     qlims = JointLimits(model, qmax_padded, qmin_padded)
     dqlims = VelocityLimits(model, model.getVelocityLimits(), node.dt)
 
@@ -350,7 +361,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
 
     # --- Stack of Tasks ---
     stack = ((g_left + g_right + base % [0, 1, 5]) /
-             (postural[6:] + 0.05 * manip_left + 0.05 * manip_right)) \
+             (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)) \
              << qlims << dqlims << collision_avoidance << base_con % [2, 3, 4]
 
     tasks = {

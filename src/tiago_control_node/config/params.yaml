@@ -1,6 +1,6 @@
 tiago_dual_control:
   ros__parameters:
-    control_dt: 0.025 # 100Hz
+    control_dt: 0.001 # 100Hz
 
     # Task Gains (Lambdas)
     lambdas:
