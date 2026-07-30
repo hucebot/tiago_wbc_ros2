@@ -8,7 +8,6 @@ import rclpy
 import tf2_geometry_msgs
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from rclpy.action import ActionClient
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener, TransformException
 from geometry_msgs.msg import PoseStamped, PointStamped, Twist, Vector3, Pose
@@ -30,17 +29,14 @@ from visualization_msgs.msg import (
     InteractiveMarkerFeedback,
 )
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
-from action_msgs.msg import GoalStatus
 
-# For Gripper Control
-from control_msgs.action import FollowJointTrajectory
+# For Trajectory Timing
 from builtin_interfaces.msg import Duration
 from std_srvs.srv import Trigger, SetBool
 
 # URDF Parsing
 try:
     from urdf_parser_py.urdf import URDF, Mesh, Box, Cylinder, Sphere
-
     HAS_URDF_PARSER = True
 except ImportError:
     print("WARNING: urdf_parser_py not found. Meshes will not be loaded.")
@@ -59,6 +55,7 @@ class CartesianInterface(Node):
         self.marker_poses = {}
         self.task_enabled = {"right": True, "left": True}
         self.is_pressed = {"right": False, "left": False}
+        self.home_timer = None  # Timer for homing sequence completion
 
         # Velocity Tracking
         self.joy_twist = Twist()
@@ -117,101 +114,37 @@ class CartesianInterface(Node):
 
         # --- SUBSCRIBERS ---
         self.create_subscription(String, "/streamdeck/teleop_mode", self._mode_cb, 10)
-        self.create_subscription(
-            String, "/streamdeck/base_teleop_mode", self._base_mode_cb, 10
-        )
+        self.create_subscription(String, "/streamdeck/base_teleop_mode", self._base_mode_cb, 10)
         self.create_subscription(Bool, "/streamdeck/reset_config", self._reset_cb, 10)
         self.create_subscription(Joy, "/joy", self._joy_cb, 10)
         self.create_subscription(Twist, "/nav/base_velocity_command", self._nav_cb, 10)
-        self.create_subscription(
-            Bool, "/opensot/reset_complete", self._reset_complete_cb, 1
-        )
+        self.create_subscription(Bool, "/opensot/reset_complete", self._reset_complete_cb, 1)
 
         for side in ["right", "left"]:
-            self.create_subscription(
-                PoseStamped,
-                f"/vive/{side}/output_pose",
-                lambda m, s=side: self._pose_cb("vive", s, m),
-                1,
-            )
-            self.create_subscription(
-                PoseStamped,
-                f"/motion_recorder/pose_{side}",
-                lambda m, s=side: self._pose_cb("replay", s, m),
-                1,
-            )
-            self.create_subscription(
-                PointStamped,
-                f"/vive/{side}/gripper",
-                lambda m, s=side: self._gripper_cb(m, s),
-                10,
-            )
-            self.create_subscription(
-                PointStamped,
-                f"/replay/{side}/gripper",
-                lambda m, s=side: self._gripper_cb(m, s),
-                10,
-            )
+            self.create_subscription(PoseStamped, f"/vive/{side}/output_pose", lambda m, s=side: self._pose_cb("vive", s, m), 1)
+            self.create_subscription(PoseStamped, f"/motion_recorder/pose_{side}", lambda m, s=side: self._pose_cb("replay", s, m), 1)
+            self.create_subscription(PointStamped, f"/vive/{side}/gripper", lambda m, s=side: self._gripper_cb(m, s), 10)
+            self.create_subscription(PointStamped, f"/replay/{side}/gripper", lambda m, s=side: self._gripper_cb(m, s), 10)
 
         # Vive specific subs
-        self.create_subscription(
-            PointStamped,
-            "/vive/right/trackpad_x",
-            lambda m: self._vive_trackpad_cb("vive", "right", "y", m),
-            10,
-        )
-        self.create_subscription(
-            PointStamped,
-            "/vive/right/trackpad_y",
-            lambda m: self._vive_trackpad_cb("vive", "right", "x", m),
-            10,
-        )
-        self.create_subscription(
-            PointStamped,
-            "/vive/left/trackpad_x",
-            lambda m: self._vive_trackpad_cb("vive", "left", "x", m),
-            10,
-        )
-        self.create_subscription(
-            PointStamped,
-            "/vive/right/trackpad_pressed",
-            lambda m: self._vive_trackpad_pressed_cb("right", m),
-            10,
-        )
-        self.create_subscription(
-            PointStamped,
-            "/vive/left/trackpad_pressed",
-            lambda m: self._vive_trackpad_pressed_cb("left", m),
-            10,
-        )
+        self.create_subscription(PointStamped, "/vive/right/trackpad_x", lambda m: self._vive_trackpad_cb("vive", "right", "y", m), 10)
+        self.create_subscription(PointStamped, "/vive/right/trackpad_y", lambda m: self._vive_trackpad_cb("vive", "right", "x", m), 10)
+        self.create_subscription(PointStamped, "/vive/left/trackpad_x", lambda m: self._vive_trackpad_cb("vive", "left", "x", m), 10)
+        self.create_subscription(PointStamped, "/vive/right/trackpad_pressed", lambda m: self._vive_trackpad_pressed_cb("right", m), 10)
+        self.create_subscription(PointStamped, "/vive/left/trackpad_pressed", lambda m: self._vive_trackpad_pressed_cb("left", m), 10)
 
-        # --- ACTION CLIENTS & SERVICES ---
-        self.cli_gripper_left = ActionClient(
-            self,
-            FollowJointTrajectory,
-            "/gripper_left_controller/follow_joint_trajectory",
-        )
-        self.cli_gripper_right = ActionClient(
-            self,
-            FollowJointTrajectory,
-            "/gripper_right_controller/follow_joint_trajectory",
-        )
-        self.cli_arm_left = ActionClient(
-            self, FollowJointTrajectory, "/arm_left_controller/follow_joint_trajectory"
-        )
-        self.cli_arm_right = ActionClient(
-            self, FollowJointTrajectory, "/arm_right_controller/follow_joint_trajectory"
-        )
-        self.cli_torso = ActionClient(
-            self, FollowJointTrajectory, "/torso_controller/follow_joint_trajectory"
-        )
-        self.cli_head = ActionClient(
-            self, FollowJointTrajectory, "/head_controller/follow_joint_trajectory"
-        )
 
-        self.cli_send_commands = self.create_client(
-            SetBool, "/ros_control_bridge/send_commands"
-        )
+        # =========================================================================
+        # REPLACED ACTION CLIENTS WITH DIRECT TOPIC PUBLISHERS
+        # =========================================================================
+        self.pub_gripper_left = self.create_publisher(JointTrajectory, "/gripper_left_controller/joint_trajectory", 10)
+        self.pub_gripper_right = self.create_publisher(JointTrajectory, "/gripper_right_controller/joint_trajectory", 10)
+        self.pub_arm_left = self.create_publisher(JointTrajectory, "/arm_left_controller/joint_trajectory", 10)
+        self.pub_arm_right = self.create_publisher(JointTrajectory, "/arm_right_controller/joint_trajectory", 10)
+        self.pub_torso = self.create_publisher(JointTrajectory, "/torso_controller/joint_trajectory", 10)
+        self.pub_head = self.create_publisher(JointTrajectory, "/head_controller/joint_trajectory", 10)
+
+        self.cli_send_commands = self.create_client(SetBool, "/ros_control_bridge/send_commands")
 
         # N Services dynamically for each home position
         self.srv_homes = {}
@@ -219,43 +152,29 @@ class CartesianInterface(Node):
             self.srv_homes[home_name] = self.create_service(
                 Trigger,
                 f"home_position/{home_name}",
-                # Use default arg in lambda to capture current loop iteration's config
                 lambda req, res, cfg=config: self._home_service_cb(req, res, cfg),
             )
 
         self.gripper_state = {"left": "OPEN", "right": "OPEN"}
         self.gripper_btn_prev = {"left": 1.0, "right": 1.0}
-        self.pose_synced = {"right": True, "right": False}
+        self.pose_synced = {"right": True, "left": False}
 
         # Initialize hardware to open state safely
         for side in ["right", "left"]:
             self._send_gripper(side, self.gripper_open_pos)
 
         # --- PUBLISHERS ---
-        self.pub_home_done = self.create_publisher(
-            Bool, "/cartesian_interface/home_done", 10
-        )
-
-        self.pub_target_r = self.create_publisher(
-            PoseStamped, "/cartesian_interface/right/target_pose", 10
-        )
-        self.pub_target_l = self.create_publisher(
-            PoseStamped, "/cartesian_interface/left/target_pose", 10
-        )
-        self.pub_target_b = self.create_publisher(
-            Twist, "/cartesian_interface/base/target_twist", 10
-        )
-        self.pub_reset_config = self.create_publisher(
-            Bool, "/streamdeck/reset_config", 10
-        )
+        self.pub_home_done = self.create_publisher(Bool, "/cartesian_interface/home_done", 10)
+        self.pub_target_r = self.create_publisher(PoseStamped, "/cartesian_interface/right/target_pose", 10)
+        self.pub_target_l = self.create_publisher(PoseStamped, "/cartesian_interface/left/target_pose", 10)
+        self.pub_target_b = self.create_publisher(Twist, "/cartesian_interface/base/target_twist", 10)
+        self.pub_reset_config = self.create_publisher(Bool, "/streamdeck/reset_config", 10)
         self.pub_pause_opensot = self.create_publisher(Bool, "/opensot/pause", 10)
 
         # --- RVIZ MARKER SERVER ---
         self.server = InteractiveMarkerServer(self, "six_dof_marker_server")
         self.menu_handler = MenuHandler()
-        self.enable_entry = self.menu_handler.insert(
-            "Enable Task", callback=self._menu_cb
-        )
+        self.enable_entry = self.menu_handler.insert("Enable Task", callback=self._menu_cb)
         self.menu_handler.setCheckState(self.enable_entry, MenuHandler.CHECKED)
         self.menu_handler.insert("Reset", callback=self._menu_cb)
 
@@ -265,30 +184,18 @@ class CartesianInterface(Node):
 
         # Control Loop (100Hz)
         self.create_timer(0.01, self._output_loop)
-        self.get_logger().info("Cartesian Interface Node Initialized")
+        self.get_logger().info("Cartesian Interface Node Initialized (Topic-Based Trajectories)")
 
     def _osot(self, frame_id: str) -> str:
         """Helper to ensure frames cleanly map to the OpenSoT ghost tree."""
         clean_frame = frame_id.replace("opensot/", "").lstrip("/")
         return f"opensot/{clean_frame}"
 
-    # --- HOME SERVICE LOGIC ---
-    def _send_action_goal(
-        self,
-        part_name: str,
-        client: ActionClient,
-        joint_names: list,
-        positions: list,
-        duration_sec: float,
-        retry_count: int = 0
-    ) -> None:
-        """Sends a Trajectory goal to a specific hardware controller with retry logic."""
-        if not client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().error(f"Action server for {part_name} not available!")
-            self._handle_home_failure(part_name, client, joint_names, positions, duration_sec, retry_count)
-            return
-
-        goal = FollowJointTrajectory.Goal()
+    # =========================================================================
+    # NEW TOPIC-BASED TRAJECTORY LOGIC
+    # =========================================================================
+    def _send_trajectory_topic(self, publisher, joint_names: list, positions: list, duration_sec: float) -> None:
+        """Publishes a JointTrajectory directly to a controller topic."""
         traj = JointTrajectory()
         traj.joint_names = joint_names
 
@@ -297,109 +204,36 @@ class CartesianInterface(Node):
         p.time_from_start = Duration(sec=int(duration_sec), nanosec=0)
 
         traj.points = [p]
-        goal.trajectory = traj
-
-        self.get_logger().info(f"Sending home goal to {part_name} (Attempt {retry_count + 1}/4)...")
-
-        future = client.send_goal_async(goal)
-
-        # Safely bind variables to lambda to avoid late-binding loop issues
-        future.add_done_callback(
-            lambda f, p_name=part_name, c=client, j=joint_names, pos=positions, d=duration_sec, r=retry_count:
-            self._home_goal_response_cb(f, p_name, c, j, pos, d, r)
-        )
-
-    def _home_goal_response_cb(self, future, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().error(f"Home Goal Rejected by hardware controller for {part_name}!")
-            self._handle_home_failure(part_name, client, joint_names, positions, duration_sec, retry_count)
-            return
-
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(
-            lambda f, p_name=part_name, c=client, j=joint_names, pos=positions, d=duration_sec, r=retry_count:
-            self._home_result_cb(f, p_name, c, j, pos, d, r)
-        )
-
-    def _home_result_cb(self, future, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
-        status = future.result().status
-
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info(f"Hardware controller {part_name} reached home position.")
-            self._check_home_completion(decrement=True)
-        else:
-            self.get_logger().error(f"Home Goal Failed/Aborted for {part_name} (Status code: {status})")
-            self._handle_home_failure(part_name, client, joint_names, positions, duration_sec, retry_count)
-
-    def _handle_home_failure(self, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
-        """Decides whether to retry a failed action or give up."""
-        MAX_RETRIES = 3
-
-        if retry_count < MAX_RETRIES:
-            self.get_logger().warn(f"Retrying {part_name} in 1 second...")
-
-            # Create a one-shot timer that cleans itself up after triggering the retry
-            timer = None
-            def _timer_callback():
-                nonlocal timer
-                self._send_action_goal(part_name, client, joint_names, positions, duration_sec, retry_count + 1)
-                timer.cancel()
-
-            timer = self.create_timer(1.0, _timer_callback)
-        else:
-            self.get_logger().error(f"MAX RETRIES REACHED for {part_name}. Homing Sequence FAILED.")
-            self.pub_home_done.publish(Bool(data=False))
-            self._check_home_completion(decrement=True, failed=True)
-
-    def _check_home_completion(self, decrement: bool = False, failed: bool = False) -> None:
-        if failed:
-            self.home_sequence_failed = True
-
-        if decrement:
-            self.home_pending_count -= 1
-
-        self.get_logger().info(f"Home pending count: {self.home_pending_count}")
-
-        if self.home_pending_count <= 0:
-            self.home_pending_count = 0
-
-            if self.home_sequence_failed:
-                self.get_logger().error("Homing aborted due to hardware failures. Skipping OpenSoT reset.")
-                # The False signal was already published to the orchestrator inside _handle_home_failure
-            else:
-                self.get_logger().info("All Home Actions Finished. Re-syncing OpenSoT...")
-                self.pub_reset_config.publish(Bool(data=True))
+        publisher.publish(traj)
+        self.get_logger().info(f"Published trajectory to {joint_names[0]}...")
 
     def _reset_complete_cb(self, msg: Bool) -> None:
+        """Fired when OpenSoT confirms it has successfully reset its internal state."""
         if msg.data:
             self.get_logger().info("OpenSoT Reset Confirmed. Unmuting OpenSoT...")
             self.pub_pause_opensot.publish(Bool(data=False))
-            self.marker_reset_timer = self.create_timer(
-                0.5, self._execute_delayed_marker_reset
-            )
+            self.marker_reset_timer = self.create_timer(0.5, self._execute_delayed_marker_reset)
+
+            # Send the final handshake back to the Orchestrator
             self.pub_home_done.publish(Bool(data=True))
 
     def _call_send_commands_service(self, state: bool) -> None:
         """Pauses/Resumes the bridge to prevent OpenSoT from fighting the hardware."""
         if not self.cli_send_commands.service_is_ready():
-            self.get_logger().warn(
-                "ros_control_bridge/send_commands service is not ready"
-            )
+            self.get_logger().warn("ros_control_bridge/send_commands service is not ready")
             return
 
         req = SetBool.Request()
         req.data = state
         future = self.cli_send_commands.call_async(req)
         future.add_done_callback(
-            lambda f: self.get_logger().info(
-                f"Bridge send_commands set to {state}: {f.result().success}"
-            )
+            lambda f: self.get_logger().info(f"Bridge send_commands set to {state}: {f.result().success}")
         )
 
     def _home_service_cb(self, request, response, target_config) -> Trigger.Response:
-        self.get_logger().info("Homing Sequence Initiated...")
+        self.get_logger().info("Homing Sequence Initiated via Topics...")
 
+        # UI and State cleanup
         self.task_enabled = {"right": False, "left": False}
         self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
         self.menu_handler.reApply(self.server)
@@ -412,30 +246,41 @@ class CartesianInterface(Node):
 
         self.pub_pause_opensot.publish(Bool(data=True))
         self._call_send_commands_service(False)
-        self.home_pending_count = 0
-        self.home_sequence_failed = False  # Track if any sub-task completely failed
+
         duration = 4.0
 
         if "arm_left" in target_config:
             jnts = [f"arm_left_{i}_joint" for i in range(1, len(target_config["arm_left"]) + 1)]
-            self._send_action_goal("arm_left", self.cli_arm_left, jnts, target_config["arm_left"], duration)
-            self.home_pending_count += 1
+            self._send_trajectory_topic(self.pub_arm_left, jnts, target_config["arm_left"], duration)
 
         if "arm_right" in target_config:
             jnts = [f"arm_right_{i}_joint" for i in range(1, len(target_config["arm_right"]) + 1)]
-            self._send_action_goal("arm_right", self.cli_arm_right, jnts, target_config["arm_right"], duration)
-            self.home_pending_count += 1
+            self._send_trajectory_topic(self.pub_arm_right, jnts, target_config["arm_right"], duration)
 
         if "torso" in target_config:
-            self._send_action_goal("torso", self.cli_torso, ["torso_lift_joint"], target_config["torso"], duration)
-            self.home_pending_count += 1
+            self._send_trajectory_topic(self.pub_torso, ["torso_lift_joint"], target_config["torso"], duration)
 
         if "head" in target_config:
-            self._send_action_goal("head", self.cli_head, ["head_1_joint", "head_2_joint"], target_config["head"], duration)
-            self.home_pending_count += 1
+            self._send_trajectory_topic(self.pub_head, ["head_1_joint", "head_2_joint"], target_config["head"], duration)
+
+        # -------------------------------------------------------------
+        # TIMER-BASED COMPLETION (Replaces Action Client Callbacks)
+        # We wait 4.0 seconds for physical motion + 0.5s padding, then trigger reset.
+        # -------------------------------------------------------------
+        if self.home_timer is not None:
+            self.home_timer.cancel()
+
+        def _finish_homing():
+            self.get_logger().info("Homing duration elapsed. Re-syncing OpenSoT...")
+            self.pub_reset_config.publish(Bool(data=True))
+            if self.home_timer is not None:
+                self.home_timer.cancel()
+                self.home_timer = None
+
+        self.home_timer = self.create_timer(duration + 0.5, _finish_homing)
 
         response.success = True
-        response.message = f"Homing started for {self.home_pending_count} controllers."
+        response.message = f"Homing trajectories published. Awaiting {duration}s completion."
         return response
 
     # --- CALLBACKS ---
@@ -445,11 +290,9 @@ class CartesianInterface(Node):
         self.get_logger().info(f"Teleop Mode -> {self.teleop_mode}")
 
         if self.teleop_mode == "rviz":
-            # Re-spawn the markers at the robot's current physical location
             self._init_marker("right")
             self._init_marker("left")
         else:
-            # Wipe the markers from RViz to prevent visual clutter and confusion
             self.server.clear()
             self.server.applyChanges()
 
@@ -487,9 +330,7 @@ class CartesianInterface(Node):
     def _nav_cb(self, msg: Twist) -> None:
         self.nav_twist = msg
 
-    def _vive_trackpad_cb(
-        self, source: str, side: str, axis: str, msg: PointStamped
-    ) -> None:
+    def _vive_trackpad_cb(self, source: str, side: str, axis: str, msg: PointStamped) -> None:
         if source == "vive" and self.is_pressed[side]:
             if side == "right":
                 if axis == "x":
@@ -514,34 +355,19 @@ class CartesianInterface(Node):
 
         if self.gripper_state[side] != desired_state:
             self.gripper_state[side] = desired_state
-            target_pos = (
-                self.gripper_closed_pos
-                if desired_state == "CLOSED"
-                else self.gripper_open_pos
-            )
-
-            self.get_logger().info(
-                f"Sending to gripper {side}: {desired_state} ({target_pos})"
-            )
+            target_pos = self.gripper_closed_pos if desired_state == "CLOSED" else self.gripper_open_pos
+            self.get_logger().info(f"Sending to gripper {side}: {desired_state} ({target_pos}) via topic")
             self._send_gripper(side, target_pos)
 
         self.gripper_btn_prev[side] = msg.point.x
 
     def _send_gripper(self, side: str, pos: float) -> None:
-        client = self.cli_gripper_left if side == "left" else self.cli_gripper_right
-        if not client.wait_for_server(timeout_sec=0.2):
-            self.get_logger().warn(
-                f"Gripper action server for {side} is not available! Ignoring command."
-            )
-            return
+        """Publish directly to the gripper controller topic instead of using actions."""
+        pub = self.pub_gripper_left if side == "left" else self.pub_gripper_right
 
-        goal = FollowJointTrajectory.Goal()
         traj = JointTrajectory()
         if self.model_type == "dual":
-            traj.joint_names = [
-                f"gripper_{side}_left_finger_joint",
-                f"gripper_{side}_right_finger_joint",
-            ]
+            traj.joint_names = [f"gripper_{side}_left_finger_joint", f"gripper_{side}_right_finger_joint"]
             p = JointTrajectoryPoint()
             p.positions = [pos, pos]
             p.time_from_start = Duration(sec=0, nanosec=int(2e8))
@@ -553,21 +379,16 @@ class CartesianInterface(Node):
             p.time_from_start = Duration(sec=0, nanosec=int(2e8))
             traj.points = [p]
 
-        goal.trajectory = traj
-        client.send_goal_async(goal)
+        pub.publish(traj)
 
     # --- RVIZ MARKER & TF LOGIC ---
     def _wait_for_tf(self) -> None:
-        self.get_logger().info(
-            "Waiting for TF tree to populate before spawning markers..."
-        )
+        self.get_logger().info("Waiting for TF tree to populate before spawning markers...")
         target_frame = self._osot(self.frames["right"])
         base_frame = self._osot(self.frames["base_right"])
 
         while rclpy.ok():
-            if self.tf_buffer.can_transform(
-                base_frame, target_frame, rclpy.time.Time()
-            ):
+            if self.tf_buffer.can_transform(base_frame, target_frame, rclpy.time.Time()):
                 self.get_logger().info("TF Tree is ready!")
                 break
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -577,10 +398,7 @@ class CartesianInterface(Node):
         target_frame = self._osot(self.frames[side])
         try:
             t = self.tf_buffer.lookup_transform(
-                base_frame,
-                target_frame,
-                rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=1.0),
+                base_frame, target_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)
             )
             p = Pose()
             p.position.x = t.transform.translation.x
@@ -598,12 +416,7 @@ class CartesianInterface(Node):
         marker = Marker()
         marker.type = Marker.CUBE
         marker.scale = Vector3(x=0.05, y=0.05, z=0.05)
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = (
-            0.0,
-            1.0,
-            0.0,
-            1.0,
-        )
+        marker.color.r, marker.color.g, marker.color.b, marker.color.a = (0.0, 1.0, 0.0, 1.0)
 
         if not HAS_URDF_PARSER or self.robot_urdf is None:
             return marker
@@ -632,12 +445,7 @@ class CartesianInterface(Node):
             marker.scale.x = geom.scale[0] if geom.scale else 1.0
             marker.scale.y = geom.scale[1] if geom.scale else 1.0
             marker.scale.z = geom.scale[2] if geom.scale else 1.0
-            marker.color.r, marker.color.g, marker.color.b, marker.color.a = (
-                0.5,
-                0.5,
-                0.5,
-                1.0,
-            )
+            marker.color.r, marker.color.g, marker.color.b, marker.color.a = (0.5, 0.5, 0.5, 1.0)
             marker.mesh_use_embedded_materials = True
         elif isinstance(geom, Box):
             marker.type = Marker.CUBE
@@ -652,24 +460,12 @@ class CartesianInterface(Node):
 
         try:
             t_offset = self.tf_buffer.lookup_transform(
-                self._osot(task_link_name),
-                self._osot(current_link),
-                rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=1.0),
+                self._osot(task_link_name), self._osot(current_link), rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)
             )
             T_task_to_link = np.eye(4)
-            rot = [
-                t_offset.transform.rotation.x,
-                t_offset.transform.rotation.y,
-                t_offset.transform.rotation.z,
-                t_offset.transform.rotation.w,
-            ]
+            rot = [t_offset.transform.rotation.x, t_offset.transform.rotation.y, t_offset.transform.rotation.z, t_offset.transform.rotation.w]
             T_task_to_link[0:3, 0:3] = R.from_quat(rot).as_matrix()
-            T_task_to_link[0:3, 3] = [
-                t_offset.transform.translation.x,
-                t_offset.transform.translation.y,
-                t_offset.transform.translation.z,
-            ]
+            T_task_to_link[0:3, 3] = [t_offset.transform.translation.x, t_offset.transform.translation.y, t_offset.transform.translation.z]
         except TransformException:
             return marker
 
@@ -701,9 +497,7 @@ class CartesianInterface(Node):
         m.pose = self._get_fk_pose(side)
         self.marker_poses[side] = m.pose
 
-        c = InteractiveMarkerControl(
-            always_visible=True, interaction_mode=InteractiveMarkerControl.MENU
-        )
+        c = InteractiveMarkerControl(always_visible=True, interaction_mode=InteractiveMarkerControl.MENU)
         c.name = "menu_control"
 
         mesh_marker = self._get_visual_marker(self.frames[side])
@@ -711,19 +505,12 @@ class CartesianInterface(Node):
         m.controls.append(c)
 
         for ax in ["x", "y", "z"]:
-            for mode in [
-                InteractiveMarkerControl.MOVE_AXIS,
-                InteractiveMarkerControl.ROTATE_AXIS,
-            ]:
+            for mode in [InteractiveMarkerControl.MOVE_AXIS, InteractiveMarkerControl.ROTATE_AXIS]:
                 mc = InteractiveMarkerControl()
                 mc.orientation.w = 1.0
                 setattr(mc.orientation, ax, 1.0)
                 mc.interaction_mode = mode
-                mc.name = (
-                    f"rotate_{ax}"
-                    if mode == InteractiveMarkerControl.ROTATE_AXIS
-                    else f"move_{ax}"
-                )
+                mc.name = f"rotate_{ax}" if mode == InteractiveMarkerControl.ROTATE_AXIS else f"move_{ax}"
                 m.controls.append(mc)
 
         self.server.insert(marker=m, feedback_callback=self._marker_fb)
@@ -745,9 +532,7 @@ class CartesianInterface(Node):
         if fb.menu_entry_id == self.enable_entry:
             st = self.menu_handler.getCheckState(self.enable_entry)
             if st == MenuHandler.CHECKED:
-                self.menu_handler.setCheckState(
-                    self.enable_entry, MenuHandler.UNCHECKED
-                )
+                self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
                 self.task_enabled[name] = False
             else:
                 self._reset_marker(name)
@@ -786,11 +571,9 @@ class CartesianInterface(Node):
 
     def _apply_smoothing(self, target: Twist, current: Twist, alpha: float) -> Twist:
         smoothed = Twist()
-
         def smooth_val(curr_v, tar_v):
             val = curr_v + alpha * (tar_v - curr_v)
             return 0.0 if abs(val) < 0.001 and abs(tar_v) < 0.001 else val
-
         smoothed.linear.x = smooth_val(current.linear.x, target.linear.x)
         smoothed.linear.y = smooth_val(current.linear.y, target.linear.y)
         smoothed.angular.z = smooth_val(current.angular.z, target.angular.z)
@@ -803,23 +586,19 @@ class CartesianInterface(Node):
         target_msg = None
 
         if self.teleop_mode == "rviz":
-            # RViz markers are manually synced by your existing _reset_marker logic
             target_pose = self.marker_poses[side]
             self.pose_synced[side] = True
         elif self.teleop_mode == "vive":
             target_msg = self.vive_poses[side]
         elif self.teleop_mode == "replay":
-            target_msg = self._tf_replay(
-                self.replay_poses[side], self.frames[f"base_{side}"]
-            )
+            target_msg = self._tf_replay(self.replay_poses[side], self.frames[f"base_{side}"])
 
-        # Time-Sensitivity Check
         if target_msg is not None:
             now = self.get_clock().now()
             msg_time = rclpy.time.Time.from_msg(target_msg.header.stamp)
-            age = (now - msg_time).nanoseconds / 1e9  # Convert to seconds
+            age = (now - msg_time).nanoseconds / 1e9
 
-            if age > 0.5:  # Reject messages older than 500ms
+            if age > 0.5:
                 return
 
             target_pose = target_msg.pose
@@ -834,16 +613,11 @@ class CartesianInterface(Node):
                 + (target_pose.position.z - current_pose.position.z) ** 2
             )
 
-            # Spatial "Catch" Mechanism
             if not self.pose_synced[side]:
-                # Require the controller/replay to get within 15cm to re-engage
                 if dist < 0.15:
-                    self.get_logger().info(
-                        f"{side.capitalize()} arm synced! Resuming control."
-                    )
+                    self.get_logger().info(f"{side.capitalize()} arm synced! Resuming control.")
                     self.pose_synced[side] = True
                 else:
-                    # Ignore commands until the source moves closer to the robot
                     return
 
             msg = PoseStamped()
@@ -861,9 +635,7 @@ class CartesianInterface(Node):
         elif self.base_teleop_mode == "vive":
             raw_target_b = self._scale_twist(self.vive_twist)
 
-        self.smoothed_twist = self._apply_smoothing(
-            raw_target_b, self.smoothed_twist, self.twist_alpha
-        )
+        self.smoothed_twist = self._apply_smoothing(raw_target_b, self.smoothed_twist, self.twist_alpha)
         self.pub_target_b.publish(self.smoothed_twist)
 
     def _output_loop(self) -> None:
@@ -871,14 +643,12 @@ class CartesianInterface(Node):
         for side, pub in [("right", self.pub_target_r), ("left", self.pub_target_l)]:
             self._process_arm_commands(side, pub)
 
-
 def main():
     rclpy.init()
     node = CartesianInterface()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
