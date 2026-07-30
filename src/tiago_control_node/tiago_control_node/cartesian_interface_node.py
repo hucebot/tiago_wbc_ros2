@@ -30,6 +30,7 @@ from visualization_msgs.msg import (
     InteractiveMarkerFeedback,
 )
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
+from action_msgs.msg import GoalStatus
 
 # For Gripper Control
 from control_msgs.action import FollowJointTrajectory
@@ -274,17 +275,17 @@ class CartesianInterface(Node):
     # --- HOME SERVICE LOGIC ---
     def _send_action_goal(
         self,
+        part_name: str,
         client: ActionClient,
         joint_names: list,
         positions: list,
         duration_sec: float,
+        retry_count: int = 0
     ) -> None:
-        """Sends a Trajectory goal to a specific hardware controller."""
+        """Sends a Trajectory goal to a specific hardware controller with retry logic."""
         if not client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().error(
-                f"Action server for {joint_names[0]} not available!"
-            )
-            self._check_home_completion(decrement=True)
+            self.get_logger().error(f"Action server for {part_name} not available!")
+            self._handle_home_failure(part_name, client, joint_names, positions, duration_sec, retry_count)
             return
 
         goal = FollowJointTrajectory.Goal()
@@ -298,25 +299,63 @@ class CartesianInterface(Node):
         traj.points = [p]
         goal.trajectory = traj
 
-        self.get_logger().info(f"Sending home goal to {joint_names[0]}...")
-        future = client.send_goal_async(goal)
-        future.add_done_callback(self._home_goal_response_cb)
+        self.get_logger().info(f"Sending home goal to {part_name} (Attempt {retry_count + 1}/4)...")
 
-    def _home_goal_response_cb(self, future) -> None:
+        future = client.send_goal_async(goal)
+
+        # Safely bind variables to lambda to avoid late-binding loop issues
+        future.add_done_callback(
+            lambda f, p_name=part_name, c=client, j=joint_names, pos=positions, d=duration_sec, r=retry_count:
+            self._home_goal_response_cb(f, p_name, c, j, pos, d, r)
+        )
+
+    def _home_goal_response_cb(self, future, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error("Home Goal Rejected by hardware controller!")
-            self._check_home_completion(decrement=True)
+            self.get_logger().error(f"Home Goal Rejected by hardware controller for {part_name}!")
+            self._handle_home_failure(part_name, client, joint_names, positions, duration_sec, retry_count)
             return
 
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._home_result_cb)
+        result_future.add_done_callback(
+            lambda f, p_name=part_name, c=client, j=joint_names, pos=positions, d=duration_sec, r=retry_count:
+            self._home_result_cb(f, p_name, c, j, pos, d, r)
+        )
 
-    def _home_result_cb(self, future) -> None:
-        self.get_logger().info("Hardware controller reached home position.")
-        self._check_home_completion(decrement=True)
+    def _home_result_cb(self, future, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
+        status = future.result().status
 
-    def _check_home_completion(self, decrement: bool = False) -> None:
+        if status == GoalStatus.SUCCEEDED:
+            self.get_logger().info(f"Hardware controller {part_name} reached home position.")
+            self._check_home_completion(decrement=True)
+        else:
+            self.get_logger().error(f"Home Goal Failed/Aborted for {part_name} (Status code: {status})")
+            self._handle_home_failure(part_name, client, joint_names, positions, duration_sec, retry_count)
+
+    def _handle_home_failure(self, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
+        """Decides whether to retry a failed action or give up."""
+        MAX_RETRIES = 3
+
+        if retry_count < MAX_RETRIES:
+            self.get_logger().warn(f"Retrying {part_name} in 1 second...")
+
+            # Create a one-shot timer that cleans itself up after triggering the retry
+            timer = None
+            def _timer_callback():
+                nonlocal timer
+                self._send_action_goal(part_name, client, joint_names, positions, duration_sec, retry_count + 1)
+                timer.cancel()
+
+            timer = self.create_timer(1.0, _timer_callback)
+        else:
+            self.get_logger().error(f"MAX RETRIES REACHED for {part_name}. Homing Sequence FAILED.")
+            self.pub_home_done.publish(Bool(data=False))
+            self._check_home_completion(decrement=True, failed=True)
+
+    def _check_home_completion(self, decrement: bool = False, failed: bool = False) -> None:
+        if failed:
+            self.home_sequence_failed = True
+
         if decrement:
             self.home_pending_count -= 1
 
@@ -324,8 +363,13 @@ class CartesianInterface(Node):
 
         if self.home_pending_count <= 0:
             self.home_pending_count = 0
-            self.get_logger().info("All Home Actions Finished. Re-syncing OpenSoT...")
-            self.pub_reset_config.publish(Bool(data=True))
+
+            if self.home_sequence_failed:
+                self.get_logger().error("Homing aborted due to hardware failures. Skipping OpenSoT reset.")
+                # The False signal was already published to the orchestrator inside _handle_home_failure
+            else:
+                self.get_logger().info("All Home Actions Finished. Re-syncing OpenSoT...")
+                self.pub_reset_config.publish(Bool(data=True))
 
     def _reset_complete_cb(self, msg: Bool) -> None:
         if msg.data:
@@ -369,41 +413,25 @@ class CartesianInterface(Node):
         self.pub_pause_opensot.publish(Bool(data=True))
         self._call_send_commands_service(False)
         self.home_pending_count = 0
+        self.home_sequence_failed = False  # Track if any sub-task completely failed
         duration = 4.0
 
         if "arm_left" in target_config:
-            jnts = [
-                f"arm_left_{i}_joint"
-                for i in range(1, len(target_config["arm_left"]) + 1)
-            ]
-            self._send_action_goal(
-                self.cli_arm_left, jnts, target_config["arm_left"], duration
-            )
+            jnts = [f"arm_left_{i}_joint" for i in range(1, len(target_config["arm_left"]) + 1)]
+            self._send_action_goal("arm_left", self.cli_arm_left, jnts, target_config["arm_left"], duration)
             self.home_pending_count += 1
 
         if "arm_right" in target_config:
-            jnts = [
-                f"arm_right_{i}_joint"
-                for i in range(1, len(target_config["arm_right"]) + 1)
-            ]
-            self._send_action_goal(
-                self.cli_arm_right, jnts, target_config["arm_right"], duration
-            )
+            jnts = [f"arm_right_{i}_joint" for i in range(1, len(target_config["arm_right"]) + 1)]
+            self._send_action_goal("arm_right", self.cli_arm_right, jnts, target_config["arm_right"], duration)
             self.home_pending_count += 1
 
         if "torso" in target_config:
-            self._send_action_goal(
-                self.cli_torso, ["torso_lift_joint"], target_config["torso"], duration
-            )
+            self._send_action_goal("torso", self.cli_torso, ["torso_lift_joint"], target_config["torso"], duration)
             self.home_pending_count += 1
 
         if "head" in target_config:
-            self._send_action_goal(
-                self.cli_head,
-                ["head_1_joint", "head_2_joint"],
-                target_config["head"],
-                duration,
-            )
+            self._send_action_goal("head", self.cli_head, ["head_1_joint", "head_2_joint"], target_config["head"], duration)
             self.home_pending_count += 1
 
         response.success = True
