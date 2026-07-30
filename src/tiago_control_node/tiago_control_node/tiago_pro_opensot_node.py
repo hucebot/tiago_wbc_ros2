@@ -52,7 +52,7 @@ class TiagoOpenSoTNode(Node):
         ]
         self.declare_parameters(namespace='', parameters=param_defaults)
         self.get_logger().info("Parameters declared with defaults.")
-
+        print("---------------------------------------")
         self.dt = self.get_parameter('control_dt').value
         self.l_right = self.get_parameter('lambdas.gripper_right').value
         self.l_left = self.get_parameter('lambdas.gripper_left').value
@@ -219,7 +219,7 @@ class TiagoOpenSoTNode(Node):
 
         # convert dict of home_configs to home config:
         
-        home_config_dict = home_configs["pick"]
+        home_config_dict = home_configs["home"]
         print(home_config_dict)
         home_config = np.array([])
         for value in home_config_dict.values():

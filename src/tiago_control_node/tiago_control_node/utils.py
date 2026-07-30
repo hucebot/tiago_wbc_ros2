@@ -166,7 +166,7 @@ MULTIPLE_HOME_CONFIGS_DUAL = {
 }
 
 MULTIPLE_HOME_CONFIGS_PRO = {
-    "default": {
+    "home": {
         "floating_base": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         "wheels": [
             np.cos(0.0),
@@ -183,7 +183,7 @@ MULTIPLE_HOME_CONFIGS_PRO = {
         "arm_right": [-0.77, -1.83, -0.47, -2.35, 0.0, -0.08, 0.42],
         "head": [0.0, -0.67],
     },
-    "pick": {
+    "table": {
         "floating_base": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         "wheels": [
             np.cos(0.0),
