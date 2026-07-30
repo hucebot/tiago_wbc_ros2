@@ -325,7 +325,7 @@ class CartesianInterface(Node):
     def _home_result_cb(self, future, part_name, client, joint_names, positions, duration_sec, retry_count) -> None:
         status = future.result().status
 
-        if status == GoalStatus.SUCCEEDED:
+        if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info(f"Hardware controller {part_name} reached home position.")
             self._check_home_completion(decrement=True)
         else:
