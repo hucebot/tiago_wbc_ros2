@@ -231,6 +231,10 @@ class CartesianInterface(Node):
             self._send_gripper(side, self.gripper_open_pos)
 
         # --- PUBLISHERS ---
+        self.pub_home_done = self.create_publisher(
+            Bool, "/cartesian_interface/home_done", 10
+        )
+
         self.pub_target_r = self.create_publisher(
             PoseStamped, "/cartesian_interface/right/target_pose", 10
         )
@@ -330,6 +334,7 @@ class CartesianInterface(Node):
             self.marker_reset_timer = self.create_timer(
                 0.5, self._execute_delayed_marker_reset
             )
+            self.pub_home_done.publish(Bool(data=True))
 
     def _call_send_commands_service(self, state: bool) -> None:
         """Pauses/Resumes the bridge to prevent OpenSoT from fighting the hardware."""
