@@ -197,6 +197,7 @@ class CartesianInterface(Node):
     def _send_trajectory_topic(self, publisher, joint_names: list, positions: list, duration_sec: float) -> None:
         """Publishes a JointTrajectory directly to a controller topic."""
         traj = JointTrajectory()
+        traj.header.stamp = self.get_clock().now().to_msg()  # CRITICAL: Add timestamp
         traj.joint_names = joint_names
 
         p = JointTrajectoryPoint()
@@ -217,18 +218,24 @@ class CartesianInterface(Node):
             # Send the final handshake back to the Orchestrator
             self.pub_home_done.publish(Bool(data=True))
 
-    def _call_send_commands_service(self, state: bool) -> None:
+    def _call_send_commands_service(self, state: bool, on_done=None) -> None:
         """Pauses/Resumes the bridge to prevent OpenSoT from fighting the hardware."""
         if not self.cli_send_commands.service_is_ready():
             self.get_logger().warn("ros_control_bridge/send_commands service is not ready")
+            if on_done:
+                on_done()
             return
 
         req = SetBool.Request()
         req.data = state
         future = self.cli_send_commands.call_async(req)
-        future.add_done_callback(
-            lambda f: self.get_logger().info(f"Bridge send_commands set to {state}: {f.result().success}")
-        )
+
+        def _future_cb(f):
+            self.get_logger().info(f"Bridge send_commands set to {state}: {f.result().success}")
+            if on_done:
+                on_done()
+
+        future.add_done_callback(_future_cb)
 
     def _home_service_cb(self, request, response, target_config) -> Trigger.Response:
         self.get_logger().info("Homing Sequence Initiated via Topics...")
@@ -245,42 +252,45 @@ class CartesianInterface(Node):
             self.pose_synced[side] = False
 
         self.pub_pause_opensot.publish(Bool(data=True))
-        self._call_send_commands_service(False)
 
-        duration = 4.0
+        # This nested function fires the trajectories AFTER OpenSoT is safely paused
+        def _fire_trajectories():
+            duration = 2.0
 
-        if "arm_left" in target_config:
-            jnts = [f"arm_left_{i}_joint" for i in range(1, len(target_config["arm_left"]) + 1)]
-            self._send_trajectory_topic(self.pub_arm_left, jnts, target_config["arm_left"], duration)
+            if "arm_left" in target_config:
+                jnts = [f"arm_left_{i}_joint" for i in range(1, len(target_config["arm_left"]) + 1)]
+                self._send_trajectory_topic(self.pub_arm_left, jnts, target_config["arm_left"], duration)
 
-        if "arm_right" in target_config:
-            jnts = [f"arm_right_{i}_joint" for i in range(1, len(target_config["arm_right"]) + 1)]
-            self._send_trajectory_topic(self.pub_arm_right, jnts, target_config["arm_right"], duration)
+            if "arm_right" in target_config:
+                jnts = [f"arm_right_{i}_joint" for i in range(1, len(target_config["arm_right"]) + 1)]
+                self._send_trajectory_topic(self.pub_arm_right, jnts, target_config["arm_right"], duration)
 
-        if "torso" in target_config:
-            self._send_trajectory_topic(self.pub_torso, ["torso_lift_joint"], target_config["torso"], duration)
+            if "torso" in target_config:
+                self._send_trajectory_topic(self.pub_torso, ["torso_lift_joint"], target_config["torso"], duration)
 
-        if "head" in target_config:
-            self._send_trajectory_topic(self.pub_head, ["head_1_joint", "head_2_joint"], target_config["head"], duration)
+            if "head" in target_config:
+                self._send_trajectory_topic(self.pub_head, ["head_1_joint", "head_2_joint"], target_config["head"], duration)
 
-        # -------------------------------------------------------------
-        # TIMER-BASED COMPLETION (Replaces Action Client Callbacks)
-        # We wait 4.0 seconds for physical motion + 0.5s padding, then trigger reset.
-        # -------------------------------------------------------------
-        if self.home_timer is not None:
-            self.home_timer.cancel()
-
-        def _finish_homing():
-            self.get_logger().info("Homing duration elapsed. Re-syncing OpenSoT...")
-            self.pub_reset_config.publish(Bool(data=True))
+            # -------------------------------------------------------------
+            # TIMER-BASED COMPLETION
+            # -------------------------------------------------------------
             if self.home_timer is not None:
                 self.home_timer.cancel()
-                self.home_timer = None
 
-        self.home_timer = self.create_timer(duration + 0.5, _finish_homing)
+            def _finish_homing():
+                self.get_logger().info("Homing duration elapsed. Re-syncing OpenSoT...")
+                self.pub_reset_config.publish(Bool(data=True))
+                if self.home_timer is not None:
+                    self.home_timer.cancel()
+                    self.home_timer = None
+
+            self.home_timer = self.create_timer(duration + 0.5, _finish_homing)
+
+        # Mute OpenSoT, and pass the firing logic as the callback!
+        self._call_send_commands_service(False, on_done=_fire_trajectories)
 
         response.success = True
-        response.message = f"Homing trajectories published. Awaiting {duration}s completion."
+        response.message = "Homing initiated. Waiting for OpenSoT to mute before moving."
         return response
 
     # --- CALLBACKS ---
