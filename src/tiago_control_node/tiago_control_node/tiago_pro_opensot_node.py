@@ -76,6 +76,7 @@ class TiagoOpenSoTNode(Node):
         self.enable_external_obstacle = False
         self.active_collisions = {}
         self.is_paused = False
+        self.gaze_locked = False
 
         # --- Subscribers ---
         self.create_subscription(Bool, '/opensot/pause', self._pause_cb, 10)
@@ -84,6 +85,7 @@ class TiagoOpenSoTNode(Node):
         self.create_subscription(Twist, '/cartesian_interface/base/target_twist', self._base_target_cb, 10)
         self.create_subscription(Bool, '/streamdeck/reset_config', self._reset_cb, 10)
         self.create_subscription(MarkerArray, '/opensot/external_collisions', self._collision_scene_cb, 10)
+        self.create_subscription(Bool, '/opensot/gaze_lock', self._gaze_lock_cb, 10)
 
         # --- Publishers ---
         self.joint_state_publisher = self.create_publisher(JointState, '/opensot/joint_states', 10)
@@ -104,6 +106,8 @@ class TiagoOpenSoTNode(Node):
         self.get_logger().info("Tiago OpenSoT Control Node initialized successfully.")
 
     # --- CALLBACKS ---
+    def _gaze_lock_cb(self, msg: Bool):
+        self.gaze_locked = msg.data
     def _pause_cb(self, msg: Bool):
         self.is_paused = msg.data
         state = "PAUSED" if self.is_paused else "RESUMED"
@@ -218,14 +222,14 @@ class TiagoOpenSoTNode(Node):
         """Sets the OpenSoT model configuration based on the hardware's real state."""
 
         # convert dict of home_configs to home config:
-        
+
         home_config_dict = home_configs["home"]
         print(home_config_dict)
         home_config = np.array([])
         for value in home_config_dict.values():
             print(value)
             home_config = np.append(home_config, value)
-        
+
         q = copy.copy(home_config)
 
         # OpenSoT local frame starts at [0,0,0] - opensot/world handles the map offset
@@ -337,8 +341,8 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     # --- Constraints ---
     qmin, qmax = model.getJointLimits()
     # add a padding to avoid making the robot go into emergency
-    
-    qmax_padded = qmax - (qmax-qmin) * 0.025 
+
+    qmax_padded = qmax - (qmax-qmin) * 0.025
     qmin_padded = qmin + (qmax-qmin) * 0.025
 
     qlims = JointLimits(model, qmax_padded, qmin_padded)
@@ -360,7 +364,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
     # --- Stack of Tasks ---
-    stack = ((g_left + g_right + base % [0, 1, 5]) /
+    stack = ((g_left + g_right + base % [0, 1, 5] + gaze) /
              (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)) \
              << qlims << dqlims << collision_avoidance << base_con % [2, 3, 4]
 
@@ -441,6 +445,10 @@ def main(args=None):
     w_T_b_tf = TransformStamped()
     w_T_b_tf.header.frame_id, w_T_b_tf.child_frame_id = "opensot/world", "opensot/base_footprint"
 
+
+    # Get looking forward gaze target
+    T_Gaze_0 = model.getPose("base_link", "base_link")
+
     try:
         while rclpy.ok():
             start = time.perf_counter()
@@ -466,8 +474,11 @@ def main(args=None):
             model.update()
 
             # Gaze Task
-            T = model.getPose("gripper_right_grasping_link", "base_link")
-            tasks["gaze"].setGaze(T)
+            if node.gaze_locked:
+                tasks["gaze"].setGaze(T_Gaze_0)
+            else:
+                T = model.getPose("gripper_right_grasping_link", "base_link")
+                tasks["gaze"].setGaze(T)
 
             # Cartesian Trajectory Commands
             for target_msg, task in [(node.target_right, tasks['right']), (node.target_left, tasks['left'])]:
