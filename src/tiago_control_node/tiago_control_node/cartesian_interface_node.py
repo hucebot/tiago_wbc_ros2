@@ -148,6 +148,10 @@ class CartesianInterface(Node):
         self.pub_target_b = self.create_publisher(Twist, '/cartesian_interface/base/target_twist', 10)
         self.pub_reset_config = self.create_publisher(Bool, '/streamdeck/reset_config', 10)
         self.pub_pause_opensot = self.create_publisher(Bool, '/opensot/pause', 10)
+        self.mujoco_gripper_pubs = {
+            'right': self.create_publisher(Bool, '/mujoco_bridge/gripper_right/open', 10),
+            'left': self.create_publisher(Bool, '/mujoco_bridge/gripper_left/open', 10),
+        }
 
         # --- RVIZ MARKER SERVER ---
         self.server = InteractiveMarkerServer(self, 'six_dof_marker_server')
@@ -155,6 +159,7 @@ class CartesianInterface(Node):
         self.enable_entry = self.menu_handler.insert("Enable Task", callback=self._menu_cb)
         self.menu_handler.setCheckState(self.enable_entry, MenuHandler.CHECKED)
         self.menu_handler.insert("Reset", callback=self._menu_cb)
+        self.gripper_entry = self.menu_handler.insert("Toggle Gripper", callback=self._menu_cb)
 
         self._wait_for_tf()
         self._init_marker("right")
@@ -352,6 +357,15 @@ class CartesianInterface(Node):
 
         self.gripper_btn_prev[side] = msg.point.x
 
+    def _toggle_gripper(self, side: str) -> None:
+        desired_state = "OPEN" if self.gripper_state[side] == "CLOSED" else "CLOSED"
+        self.gripper_state[side] = desired_state
+        target_pos = self.gripper_closed_pos if desired_state == "CLOSED" else self.gripper_open_pos
+
+        self.get_logger().info(f"[Menu] Toggling gripper {side}: {desired_state} ({target_pos})")
+        self._send_gripper(side, target_pos)
+        self.mujoco_gripper_pubs[side].publish(Bool(data=(desired_state == "OPEN")))
+
     def _send_gripper(self, side: str, pos: float) -> None:
         client = self.cli_gripper_left if side == "left" else self.cli_gripper_right
         if not client.wait_for_server(timeout_sec=0.2):
@@ -537,6 +551,8 @@ class CartesianInterface(Node):
                 self._reset_marker(name)
                 self.menu_handler.setCheckState(self.enable_entry, MenuHandler.CHECKED)
                 self.task_enabled[name] = True
+        elif fb.menu_entry_id == self.gripper_entry:
+            self._toggle_gripper(name)
         else:
             self._reset_marker(name)
 

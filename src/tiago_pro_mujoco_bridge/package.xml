@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>tiago_pro_mujoco_bridge</name>
+  <version>0.1.0</version>
+  <description>MuJoCo-based simulated hardware bridge for Tiago Pro, standing in for the real robot on the OpenSoT/cartesian_interface pipeline.</description>
+  <maintainer email="yiannisloizou@gmail.com">Yiannis Loizou</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tiago_control_node</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

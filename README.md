@@ -52,6 +52,34 @@ After a few moments, **RViz** should open and display the TIAGo robot model. You
 ![Demo Video](assets/tiago_pro_rviz.gif)
 ---
 
+## MuJoCo Simulation (Tiago Pro)
+
+Instead of the real robot, the OpenSoT/cartesian_interface pipeline can drive a MuJoCo
+simulation via the `tiago_pro_mujoco_bridge` package. The robot assets (XMLs + meshes)
+are vendored in this repo under `robots/pal_tiago_pro/`.
+
+### 1. Start the dev container
+
+```bash
+make dev
+```
+
+### 2. Build and launch, inside the container
+
+```bash
+cd /home/forest_ws
+colcon build --symlink-install --packages-select tiago_control_node tiago_pro_mujoco_bridge
+source install/setup.bash
+source setup.bash
+ros2 launch tiago_control_node bringup.launch.py robot_model:=pro use_mujoco_sim:=true # Launches RViz2 and Mujoco 
+```
+
+To run pose commander where you can have a point plan
+```bash
+ros2 run tiago_control_node pose_commander
+```
+
+
 ## Coming Soon
 
 Documentation for running the controller on the real TIAGo robot will be added soon.

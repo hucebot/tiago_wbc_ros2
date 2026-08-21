@@ -17,6 +17,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     libqhull-dev nlohmann-json3-dev coinor-libipopt-dev \
     ros-humble-realsense2-camera ros-humble-realsense2-description \
     ros-humble-rmw-cyclonedds-cpp \
+    libglfw3 libglfw3-dev libgl1-mesa-glx libgl1-mesa-dri \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Setup Virtual Env
@@ -28,7 +29,7 @@ RUN python3 -m venv /home/.base && \
 # Forest & Matlogger
 WORKDIR /home/forest_ws
 RUN source /home/.base/bin/activate && \
-    pip install --no-cache-dir --upgrade ttictoc "setuptools<70.0.0" hhcm-forest mujoco "numpy<2.0.0" jinja2 typeguard h5py viser && \
+    pip install --no-cache-dir --upgrade ttictoc "setuptools<70.0.0" hhcm-forest mujoco glfw "numpy<2.0.0" jinja2 typeguard h5py viser && \
     forest init && \
     forest add-recipes git@github.com:advrhumanoids/multidof_recipes.git --tag ros2 && \
     forest grow matlogger2 --verbose --jobs $(nproc) --pwd user
@@ -59,7 +60,7 @@ WORKDIR /home/forest_ws/src
 RUN git clone --depth 1 -b devel https://github.com/hucebot/xbot2_interface.git && \
     mkdir -p /home/forest_ws/build/xbot2_interface && cd /home/forest_ws/build/xbot2_interface && \
     source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
-    cmake -DXBOT2_IFC_BUILD_TESTS=ON -DXBOT2_IFC_BUILD_ROS=OFF -DXBOT2_IFC_BUILD_ROS2=OFF -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release ../../src/xbot2_interface && \
+    cmake -DXBOT2_IFC_BUILD_TESTS=ON -DXBOT2_IFC_BUILD_ROS=OFF -DXBOT2_IFC_BUILD_ROS2=OFF -DBoost_USE_DEBUG_RUNTIME=OFF -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install -DCMAKE_BUILD_TYPE:STRING=Release ../../src/xbot2_interface && \
     make -j2 && make install && \
     rm -rf /home/forest_ws/build/xbot2_interface /home/forest_ws/src/xbot2_interface
 
@@ -125,6 +126,11 @@ RUN git clone https://github.com/hucebot/robot_capsule_generator.git && \
 RUN echo "export LD_LIBRARY_PATH=/home/forest_ws/install/lib/roboptim-core/:$LD_LIBRARY_PATH" >> ~/.bashrc
 
 # mujoco
+# NOTE: this builds/installs the MuJoCo C++ library + Python bindings (mujoco, glfw pip
+# packages above) used by tiago_pro_mujoco_bridge for simulated hardware. The robot assets
+# (tiago_pro.xml etc.) live in this repo's robots/ directory and are NOT baked into this
+# image - for local dev they are bind-mounted at /home/forest_ws/robots via
+# docker-compose.yaml (see README.md).
 WORKDIR /home/forest_ws/src
 RUN git clone --depth 1 https://github.com/deepmind/mujoco.git && \
     mkdir -p /home/forest_ws/build/mujoco && cd /home/forest_ws/build/mujoco && \

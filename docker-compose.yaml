@@ -39,3 +39,4 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro
       - ./src:/home/forest_ws/src
+      - ./robots:/home/forest_ws/robots:ro
