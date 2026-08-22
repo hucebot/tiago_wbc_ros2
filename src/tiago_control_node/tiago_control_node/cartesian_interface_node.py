@@ -154,12 +154,22 @@ class CartesianInterface(Node):
         }
 
         # --- RVIZ MARKER SERVER ---
+        # Each side gets its own MenuHandler instance: a shared handler would share
+        # check-state (and entry ids) across both markers, so unchecking "Enable Task"
+        # on one arm's menu would visually uncheck the other's too via reApply(), while
+        # only actually disabling the arm whose menu was clicked (self.task_enabled
+        # tracked correctly per-side, but the checkbox display was lying about it).
         self.server = InteractiveMarkerServer(self, 'six_dof_marker_server')
-        self.menu_handler = MenuHandler()
-        self.enable_entry = self.menu_handler.insert("Enable Task", callback=self._menu_cb)
-        self.menu_handler.setCheckState(self.enable_entry, MenuHandler.CHECKED)
-        self.menu_handler.insert("Reset", callback=self._menu_cb)
-        self.gripper_entry = self.menu_handler.insert("Toggle Gripper", callback=self._menu_cb)
+        self.menu_handlers = {}
+        self.enable_entries = {}
+        self.gripper_entries = {}
+        for side in ('right', 'left'):
+            mh = MenuHandler()
+            self.enable_entries[side] = mh.insert("Enable Task", callback=self._menu_cb)
+            mh.setCheckState(self.enable_entries[side], MenuHandler.CHECKED)
+            mh.insert("Reset", callback=self._menu_cb)
+            self.gripper_entries[side] = mh.insert("Toggle Gripper", callback=self._menu_cb)
+            self.menu_handlers[side] = mh
 
         self._wait_for_tf()
         self._init_marker("right")
@@ -245,8 +255,9 @@ class CartesianInterface(Node):
         self.get_logger().info("Homing Sequence Initiated...")
 
         self.task_enabled = {"right": False, "left": False}
-        self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
-        self.menu_handler.reApply(self.server)
+        for side, mh in self.menu_handlers.items():
+            mh.setCheckState(self.enable_entries[side], MenuHandler.UNCHECKED)
+            mh.reApply(self.server)
         self.server.applyChanges()
 
         self.pub_pause_opensot.publish(Bool(data=True))
@@ -299,8 +310,9 @@ class CartesianInterface(Node):
     def _reset_cb(self, msg: Bool) -> None:
         if msg.data:
             self.task_enabled = {"right": False, "left": False}
-            self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
-            self.menu_handler.reApply(self.server)
+            for side, mh in self.menu_handlers.items():
+                mh.setCheckState(self.enable_entries[side], MenuHandler.UNCHECKED)
+                mh.reApply(self.server)
             self.server.applyChanges()
 
     def _execute_delayed_marker_reset(self) -> None:
@@ -527,7 +539,7 @@ class CartesianInterface(Node):
                 m.controls.append(mc)
 
         self.server.insert(marker=m, feedback_callback=self._marker_fb)
-        self.menu_handler.apply(self.server, m.name)
+        self.menu_handlers[side].apply(self.server, m.name)
         self.server.applyChanges()
 
     def _marker_fb(self, fb: InteractiveMarkerFeedback) -> None:
@@ -542,21 +554,22 @@ class CartesianInterface(Node):
 
     def _menu_cb(self, fb: InteractiveMarkerFeedback) -> None:
         name = fb.marker_name
-        if fb.menu_entry_id == self.enable_entry:
-            st = self.menu_handler.getCheckState(self.enable_entry)
+        mh = self.menu_handlers[name]
+        if fb.menu_entry_id == self.enable_entries[name]:
+            st = mh.getCheckState(self.enable_entries[name])
             if st == MenuHandler.CHECKED:
-                self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
+                mh.setCheckState(self.enable_entries[name], MenuHandler.UNCHECKED)
                 self.task_enabled[name] = False
             else:
                 self._reset_marker(name)
-                self.menu_handler.setCheckState(self.enable_entry, MenuHandler.CHECKED)
+                mh.setCheckState(self.enable_entries[name], MenuHandler.CHECKED)
                 self.task_enabled[name] = True
-        elif fb.menu_entry_id == self.gripper_entry:
+        elif fb.menu_entry_id == self.gripper_entries[name]:
             self._toggle_gripper(name)
         else:
             self._reset_marker(name)
 
-        self.menu_handler.reApply(self.server)
+        mh.reApply(self.server)
         self.server.applyChanges()
 
     def _tf_replay(self, msg: PoseStamped, target_frame: str) -> Optional[PoseStamped]:

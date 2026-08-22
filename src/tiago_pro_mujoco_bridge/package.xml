@@ -11,7 +11,11 @@
 
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tiago_control_node</depend>
+  <depend>python3-h5py</depend>
 
   <export>
     <build_type>ament_python</build_type>

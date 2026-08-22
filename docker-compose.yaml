@@ -23,6 +23,7 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro
+      - ./data:/tmp/tiago_pro_episodes
 
   # DEVELOPMENT SERVICE (Uses Build + Local Mounts)
   opensot_dev:
@@ -40,3 +41,4 @@ services:
       - ./configs/:/home/configs:ro
       - ./src:/home/forest_ws/src
       - ./robots:/home/forest_ws/robots:ro
+      - ./data:/tmp/tiago_pro_episodes

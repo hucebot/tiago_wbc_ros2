@@ -27,6 +27,16 @@ def generate_launch_description():
         default_value='/home/forest_ws/robots/pal_tiago_pro/xmls/scene_tiago_pro.xml',
         description='Path to the tiago-pro-mujoco scene XML.'
     )
+    episode_log_path_arg = DeclareLaunchArgument(
+        'episode_log_path',
+        default_value='/tmp/tiago_pro_episodes/dataset.h5',
+        description='Single HDF5 file mujoco_bridge_node appends one demo_N group to per successful episode.'
+    )
+    mujoco_viewer_arg = DeclareLaunchArgument(
+        'mujoco_viewer',
+        default_value='true',
+        description='Show the MuJoCo passive viewer window. Set false for faster headless data collection.'
+    )
 
     # State conditions (CLEANED)
     robot_model = LaunchConfiguration('robot_model')
@@ -137,7 +147,11 @@ def generate_launch_description():
         executable='mujoco_bridge_node',
         name='tiago_pro_mujoco_bridge',
         output='screen',
-        parameters=[{'mujoco_xml_path': LaunchConfiguration('mujoco_xml_path')}],
+        parameters=[{
+            'mujoco_xml_path': LaunchConfiguration('mujoco_xml_path'),
+            'episode_log_path': LaunchConfiguration('episode_log_path'),
+            'viewer': PythonExpression(["'", LaunchConfiguration('mujoco_viewer'), "' == 'true'"]),
+        }],
         condition=IfCondition(PythonExpression([
             "'", robot_model, "' == 'pro' and '", use_mujoco_sim, "' == 'true'"
         ]))
@@ -167,6 +181,8 @@ def generate_launch_description():
         robot_model_arg,
         use_mujoco_sim_arg,
         mujoco_xml_path_arg,
+        episode_log_path_arg,
+        mujoco_viewer_arg,
         node_tf_bridge_opensot,
         node_real_rsp,
         node_opensot_rsp,

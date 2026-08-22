@@ -13,6 +13,7 @@
       <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
       <material name="table_wood" rgba="0.55 0.35 0.2 1"/>
       <material name="cube_red" rgba="0.8 0.1 0.1 1"/>
+      <material name="basket_blue" rgba="0.2 0.3 0.8 1"/>
   </asset>
 
   <worldbody>
@@ -30,12 +31,35 @@
           <geom name="table_leg_br" type="box" size="0.015 0.015 0.2225" pos="-0.25 -0.25 0.2225" material="table_wood"/>
       </body>
 
-      <!-- Graspable cube: 4cm, resting on the table top (free joint so it can be picked up) -->
-      <body name="cube" pos="0.6 0 0.497">
+      <!-- Graspable cube, resting on the table top (free joint so it can be picked up).
+           Spawned on the right side of the table, in the right arm's workspace. -->
+      <body name="cube" pos="0.6 -0.15 0.497">
           <freejoint name="cube_freejoint"/>
           <inertial pos="0 0 0" mass="0.05" diaginertia="2e-5 2e-5 2e-5"/>
+          <!-- MuJoCo combines two contacting geoms' friction by taking the elementwise max
+               (equal priority on both sides here), so raising these dominates every contact
+               the cube makes - including against the gripper fingertips, which don't set
+               friction at all and fall back to the engine default (1, 0.005, 0.0001).
+               condim=6 (full friction cone incl. rolling) was tried and made slip worse, not
+               better - likely the solver struggling with a friction spread across 2 orders
+               of magnitude on a high-condim contact, compounded by the fingertip collision
+               geoms being capsules (see tiago_pro.xml's "collision" default class), which
+               don't give box-vs-capsule contact much real area for rolling friction to act
+               on anyway. Back to condim=4 (sliding + torsional only) with a smaller, more
+               proportionate bump. -->
           <geom name="cube_geom" type="box" size="0.02 0.02 0.02" material="cube_red"
-              friction="1.0 0.01 0.0001" condim="4"/>
+              friction="1.5 0.02 0.002" condim="4"/>
+      </body>
+
+      <!-- Basket the cube gets placed into: static (no freejoint), an open-top tray made of
+           a floor + 4 walls. Sits on the table's far edge (away from the robot), centered in
+           y - see BASKET_XY / BASKET_HOVER_Z in pose_commander.py, which must match this. -->
+      <body name="basket" pos="0.78 0 0.475">
+          <geom name="basket_floor" type="box" size="0.08 0.08 0.0025" pos="0 0 0.0025" material="basket_blue"/>
+          <geom name="basket_wall_px" type="box" size="0.005 0.08 0.025" pos="0.075 0 0.03" material="basket_blue"/>
+          <geom name="basket_wall_nx" type="box" size="0.005 0.08 0.025" pos="-0.075 0 0.03" material="basket_blue"/>
+          <geom name="basket_wall_py" type="box" size="0.08 0.005 0.025" pos="0 0.075 0.03" material="basket_blue"/>
+          <geom name="basket_wall_ny" type="box" size="0.08 0.005 0.025" pos="0 -0.075 0.03" material="basket_blue"/>
       </body>
   </worldbody>
 </mujoco>

@@ -236,3 +236,7 @@ __marimo__/
 build
 install
 log
+
+# Collected episode datasets (see docker-compose.yaml's ./data mount)
+/data/
+*mutagen*

@@ -28,6 +28,7 @@ setup(
             'tiago_pro_opensot_node = tiago_control_node.tiago_pro_opensot_node:main',
             'dummy_obstacles = tiago_control_node.dummy_obstacles:main',
             'pose_commander = tiago_control_node.pose_commander:main',
+            'episode_manager = tiago_control_node.episode_manager:main',
         ],
     },
 )
