@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Waypoint plan executor for the Tiago WBC end effector(s).
+"""Generic waypoint plan executor for the Tiago WBC end effector(s).
 
-Define PLAN below as a sequence of waypoints and run this script - it drives
-the arm(s) through them in order via /cartesian_interface/{side}/target_pose,
+This file has no task-specific knowledge - it just knows how to run a PLAN (a
+list of waypoints; see tiago_control_node/tasks/pick_place_basket.py for the
+format and an example) by publishing to /cartesian_interface/{side}/target_pose,
 the same topics tiago_pro_opensot_node / tiago_opensot_node listen on. Those
 nodes use the pose numbers directly as the desired end-effector pose in the
 arm task's base frame (base_link by default), no TF lookup involved.
 
-Waypoints are specified relative to the target object's pose, read from
+Waypoints can be specified relative to the target object's pose, read from
 /mujoco_bridge/target_object_pose (published by the MuJoCo bridge from the
-live sim, see tiago_pro_mujoco_bridge/mujoco_bridge_node.py). This node waits
-for that topic before running the plan, so the grasp/place trajectory tracks
-wherever the object actually is instead of assuming a fixed spawn point -
-required for randomizing the object pose across data-collection episodes.
+live sim). This node waits for that topic before running a plan, so an
+object-relative grasp/place trajectory tracks wherever the object actually is
+instead of assuming a fixed spawn point - required for randomizing the object
+pose across data-collection episodes.
+
+To run a different task, edit the import in main() below to point at a
+different tasks/*.py module.
 
 Usage:
   ros2 run tiago_control_node pose_commander
@@ -24,69 +28,8 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as R, Slerp
 
-
-# --- DEFINE YOUR PLAN HERE ---
-# Each waypoint moves whichever side(s) are present, simultaneously, then
-# holds for 'hold' seconds before moving to the next one. Orientation can be
-# given as 'rpy_deg' (roll, pitch, yaw in degrees) or 'quat' (x, y, z, w).
-# A 'gripper' key commands the MuJoCo bridge directly, e.g. {'right': 'close'}.
-#
-# Position is given as 'xyz_rel', an [dx, dy, dz] offset added to the target
-# object's xyz (captured once, at plan start) - or as 'xyz', an absolute
-# base_link-frame position, for waypoints that aren't object-relative (e.g.
-# the basket: it's a fixed static fixture, not the tracked object, so its
-# waypoint uses its known world position directly instead of an offset).
-#
-# Pick-and-place-in-basket demo: right arm picks the object up off the table
-# and drops it into the basket fixture (robots/pal_tiago_pro/xmls/scene_tiago_pro.xml,
-# body "basket" - BASKET_XY/BASKET_HOVER_Z below must match that body's geometry).
-# quat [1,0,0,0] is a top-down approach (gripper pointing straight down).
-#
-# APPROACH_Z_OFFSET/GRASP_Z_OFFSET (pick side) are tuned/verified-reachable
-# against the robots/pal_tiago_pro MuJoCo model - pose_commander targets the real
-# solver's gripper_right_grasping_link frame from the actual URDF, whose exact
-# offset from the wrist may not perfectly match the MuJoCo model, so nudge by a
-# centimeter or two if the real grasp misses. The grasp orientation ignores the
-# object's own rotation (fine for a symmetric cube; revisit if the object changes).
-#
-# Table strikes were happening because pregrasp/descend/lift each used a different
-# xy (and the very first move went straight from home - which isn't top-down - to a
-# low, angled pregrasp), so the arm was simultaneously reorienting, translating
-# laterally, AND dropping close to the table in one motion, with no guarantee
-# OpenSoT's IK path stays clear of it along the way. Fixed by decoupling those three
-# things: GRASP_XY_OFFSET is now shared by every pick-phase waypoint (pregrasp,
-# descend, lift, transit) so the only thing that ever changes near the table is
-# height, one axis at a time; TRANSIT_Z_OFFSET adds a safe waypoint well above the
-# table where the big home -> top-down reorientation and any lateral travel happen,
-# clear of any collision risk.
-#
-# The basket has 5cm walls with the floor's top at 0.48 and the rim at 0.53
-# (see the XML); BASKET_HOVER_Z hovers 3cm above the rim and releases there
-# rather than descending inside the walls, to keep the gripper clear of them -
-# the object free-falls the last few cm into the basket. Watch the first few
-# drops in the viewer and tighten BASKET_HOVER_Z if it's bouncing out.
-TOP_DOWN = [1.0, 0.0, 0.0, 0.0]
-FOURTY_FIVE_DEG_DOWN = R.from_euler('y', 90, degrees=True).as_quat().tolist()
-GRASP_XY_OFFSET = [0.00, 0.0]  # lateral nudge from the object's own xy to the actual grasp point -
-                                # shared by every pick-phase waypoint, see note above
-TRANSIT_Z_OFFSET = 0.08    # safe height above the object for reorienting/traveling laterally
-APPROACH_Z_OFFSET = 0.023  # above the object: pre-grasp / lift height, close to the table
-GRASP_Z_OFFSET = -0.057    # at the object: descend-to-grasp height
-BASKET_XY = (0.78, 0.0)    # must match the "basket" body's pos in scene_tiago_pro.xml
-BASKET_HOVER_Z = 0.56      # basket rim (0.53) + 3cm clearance
-PLAN = [
-    {'hold': 1.0, 'right': {'xyz_rel': [*GRASP_XY_OFFSET, TRANSIT_Z_OFFSET], 'quat': FOURTY_FIVE_DEG_DOWN}},     # transit height above the grasp point - reorients to top-down here, clear of the table
-    {'hold': 1.0, 'right': {'xyz_rel': [*GRASP_XY_OFFSET, APPROACH_Z_OFFSET], 'quat': FOURTY_FIVE_DEG_DOWN}},    # pre-grasp - straight down from transit, same xy/orientation
-    {'hold': 1.0, 'right': {'xyz_rel': [*GRASP_XY_OFFSET, GRASP_Z_OFFSET], 'quat': FOURTY_FIVE_DEG_DOWN}},       # descend to object - straight down, no lateral motion
-    {'hold': 1.0, 'gripper': {'right': 'close'}},                                                     # grasp
-    {'hold': 1.0, 'right': {'xyz_rel': [*GRASP_XY_OFFSET, APPROACH_Z_OFFSET], 'quat': FOURTY_FIVE_DEG_DOWN}},    # lift - straight up, same xy as grasp
-    {'hold': 1.0, 'right': {'xyz_rel': [*GRASP_XY_OFFSET, TRANSIT_Z_OFFSET], 'quat': FOURTY_FIVE_DEG_DOWN}},     # lift further to transit height - straight up
-    {'hold': 2.0, 'right': {'xyz': [*BASKET_XY, BASKET_HOVER_Z], 'quat': FOURTY_FIVE_DEG_DOWN}},                 # transport, hover over the basket - lateral move, already at a safe height
-    {'hold': 2.0, 'gripper': {'right': 'open'}},                                                       # release - drops into the basket
-    {'hold': 1.0, 'right': {'xyz_rel': [*GRASP_XY_OFFSET, TRANSIT_Z_OFFSET], 'quat': TOP_DOWN}},     # retreat to transit height, back over the pick spot
-]
 
 class PoseCommander(Node):
     def __init__(self):
@@ -107,6 +50,9 @@ class PoseCommander(Node):
         }
         self.targets = {'right': None, 'left': None}
         self.gripper_targets = {'right': None, 'left': None}
+        # (xyz, quat) of the last waypoint commanded per side, so the NEXT waypoint's
+        # motion can be interpolated from here rather than jumped to - see _move_to().
+        self._last_waypoint_pose = {'right': None, 'left': None}
         self.object_xyz = None
         self.create_subscription(
             PoseStamped, '/mujoco_bridge/target_object_pose', self._object_pose_cb, 10)
@@ -145,6 +91,7 @@ class PoseCommander(Node):
         final pose and immediately fights the reset."""
         self.targets = {'right': None, 'left': None}
         self.gripper_targets = {'right': None, 'left': None}
+        self._last_waypoint_pose = {'right': None, 'left': None}
 
     def _publish_targets(self):
         now = self.get_clock().now().to_msg()
@@ -175,20 +122,59 @@ class PoseCommander(Node):
         object_xyz = self.object_xyz
         for i, waypoint in enumerate(plan):
             hold = waypoint.get('hold', 3.0)
+            side_targets = {}
             for side in ('right', 'left'):
                 if side not in waypoint:
                     continue
                 xyz, quat = _resolve_pose(waypoint[side], object_xyz)
-                self.set_target(side, xyz, quat)
+                side_targets[side] = (xyz, quat)
                 self.get_logger().info(f"Waypoint {i + 1}/{len(plan)} [{side}]: xyz={xyz}")
 
             for side, status in waypoint.get('gripper', {}).items():
                 self.set_gripper(side, status)
                 self.get_logger().info(f"Waypoint {i + 1}/{len(plan)} [gripper {side}]: {status}")
 
-            self._spin_for(hold)
+            if side_targets:
+                self._move_to(side_targets, hold)
+            else:
+                self._spin_for(hold)  # gripper-only waypoint - nothing to move
 
         return object_xyz
+
+    def _move_to(self, side_targets, duration_sec):
+        """Publishes a continuously-interpolated target from each side's last commanded
+        pose to its new one over duration_sec, instead of jumping straight there and
+        holding a fixed value for the whole duration.
+
+        This matters beyond just "looking smoother": the commanded pose here is exactly
+        what gets logged as actions/eef_{side}_pose (see mujoco_sim_node.py's
+        get_log_entry - it mirrors /cartesian_interface/{side}/target_pose, not ground
+        truth motion), and that's also true on the real robot, where it's driven by a
+        continuously-tracked Vive controller. Jumping-and-holding here would make a
+        scripted plan's recorded actions look like a handful of discrete steps instead of
+        the continuously-varying signal a human teleoperator produces - a training-data
+        mismatch, not just a visual one.
+        """
+        starts = {side: self._last_waypoint_pose[side] or pose for side, pose in side_targets.items()}
+        rotations = {
+            side: Slerp([0.0, 1.0], R.from_quat([starts[side][1], target_quat]))
+            for side, (_, target_quat) in side_targets.items()
+        }
+
+        start_time = self.get_clock().now().nanoseconds / 1e9
+        while rclpy.ok():
+            frac = 1.0 if duration_sec <= 0 else min(
+                1.0, (self.get_clock().now().nanoseconds / 1e9 - start_time) / duration_sec)
+            for side, (target_xyz, _) in side_targets.items():
+                start_xyz, _ = starts[side]
+                xyz = [(1 - frac) * s + frac * t for s, t in zip(start_xyz, target_xyz)]
+                quat = rotations[side](frac).as_quat().tolist()
+                self.set_target(side, xyz, quat)
+            rclpy.spin_once(self, timeout_sec=0.02)
+            if frac >= 1.0:
+                break
+
+        self._last_waypoint_pose.update(side_targets)
 
 
 def _resolve_pose(spec, object_xyz):
@@ -206,6 +192,9 @@ def _resolve_pose(spec, object_xyz):
 
 
 def main(args=None):
+    # Change this import to run a different task.
+    from tiago_control_node.tasks.pick_place_basket import PLAN
+
     rclpy.init(args=args)
     node = PoseCommander()
 

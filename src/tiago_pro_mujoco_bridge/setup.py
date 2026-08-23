@@ -21,7 +21,8 @@ setup(
     license='TODO',
     entry_points={
         'console_scripts': [
-            'mujoco_bridge_node = tiago_pro_mujoco_bridge.mujoco_bridge_node:main',
+            'mujoco_sim_node = tiago_pro_mujoco_bridge.mujoco_sim_node:main',
+            'episode_orchestrator_node = tiago_pro_mujoco_bridge.episode_orchestrator_node:main',
         ],
     },
 )

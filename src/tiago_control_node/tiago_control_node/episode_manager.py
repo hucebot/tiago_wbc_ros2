@@ -3,9 +3,10 @@
 
 Repeats, for `num_episodes`: reset the MuJoCo episode (robot back to home, the
 target object respawned at a new random table position via the MuJoCo bridge's
-/mujoco_bridge/end_episode service - see tiago_pro_mujoco_bridge/mujoco_bridge_node.py),
-run pose_commander's PLAN against wherever the object actually is, then judge
-success from whether the object ends up inside the basket fixture.
+/mujoco_bridge/end_episode service - see tiago_pro_mujoco_bridge/episode_orchestrator_node.py),
+run the task's PLAN against wherever the object actually is, then judge success via
+the task's check_success(). The task itself (what to do, how to tell it worked) lives in
+tiago_control_node/tasks/ - this file is generic across whatever task is imported below.
 
 Each successful episode's full step-by-step trajectory is saved to HDF5 by the MuJoCo
 bridge itself as a "demo_N" group in a single file (its 'episode_log_path' parameter);
@@ -20,11 +21,8 @@ import rclpy
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 
-from tiago_control_node.pose_commander import PoseCommander, PLAN, BASKET_XY
-
-SUCCESS_XY_TOLERANCE = 0.05   # meters: how close to the basket's center counts as "inside" (basket's
-                               # inner cavity is roughly +-0.07m, see scene_tiago_pro.xml)
-SUCCESS_Z_MAX = 0.60          # object must have settled into/near the basket, not still airborne
+from tiago_control_node.pose_commander import PoseCommander
+from tiago_control_node.tasks.pick_place_basket import PLAN, check_success
 
 
 class EpisodeManager(PoseCommander):
@@ -50,6 +48,20 @@ class EpisodeManager(PoseCommander):
             self.episode_ready = True
 
     def _end_episode(self, success: bool) -> None:
+        # MUST happen before any spinning below, not after: spin_until_future_complete /
+        # spin_once service every ready callback on this node, including our own
+        # _publish_targets timer - if self.targets still held the just-finished plan's
+        # final waypoint, that timer would keep republishing it to
+        # /cartesian_interface/{side}/target_pose for the entire multi-second reset,
+        # continuously fighting tiago_pro_opensot_node's attempt to actually reach home
+        # (its reset_poses() clears target_right/left once, but the very next stale
+        # message right behind it immediately sets it again). That's what was causing the
+        # arm to get stuck instead of settling - not a timing race, a sustained fight for
+        # the whole reset window. Clearing this first means there's nothing stale left to
+        # republish by the time any spinning starts.
+        self.object_xyz = None
+        self.clear_targets()
+
         self.episode_ready = False
         req = SetBool.Request()
         req.data = success
@@ -67,23 +79,17 @@ class EpisodeManager(PoseCommander):
                 "Timed out waiting for /mujoco_bridge/episode_ready - is the MuJoCo bridge running "
                 "and receiving /opensot/reset_complete?")
 
-        # Now it's actually safe to proceed: invalidate our cached object pose so the next
-        # run_plan() blocks for a genuinely fresh (post-respawn) one, and stop our own
-        # publish timer from re-sending the previous episode's last waypoint, which would
-        # otherwise immediately re-drag the arm away from the fresh reset.
+        # Clear this AGAIN, now that episode_ready is confirmed: episode_ready and the
+        # freshly-randomized /mujoco_bridge/target_object_pose come from two different
+        # processes (episode_orchestrator_node and mujoco_sim_node respectively), so there's
+        # no guarantee we received them in that order even though the orchestrator only
+        # publishes ready after randomizing server-side - if the stale (still-parked)
+        # reading from earlier in the reset happened to arrive here last, self.object_xyz
+        # would already be non-None and run_plan()'s wait_for_object_pose() would return
+        # immediately with that wrong position instead of waiting for anything fresh. This
+        # guarantees the very next reading run_plan() sees was published after we already
+        # know the reset (and therefore the randomize) is done.
         self.object_xyz = None
-        self.clear_targets()
-
-    def _check_success(self) -> bool:
-        target_x, target_y = BASKET_XY
-
-        fx, fy, fz = self.object_xyz
-        dist = ((fx - target_x) ** 2 + (fy - target_y) ** 2) ** 0.5
-        success = dist < SUCCESS_XY_TOLERANCE and fz < SUCCESS_Z_MAX
-        self.get_logger().info(
-            f"Object ended at ({fx:.3f}, {fy:.3f}, {fz:.3f}), basket at ({target_x:.3f}, {target_y:.3f}), "
-            f"dist={dist:.3f} -> {'SUCCESS' if success else 'FAILURE'}")
-        return success
 
     def run_episodes(self) -> None:
         successes = 0
@@ -93,8 +99,17 @@ class EpisodeManager(PoseCommander):
             self.get_logger().info(f"=== Episode {i + 1}/{self.num_episodes}: resetting ===")
             self._end_episode(success=last_success)
 
-            self.run_plan(PLAN)
-            last_success = self._check_success()
+            # One bad episode (a plan step timing out, a transient service failure, ...)
+            # shouldn't kill an otherwise-long unattended data-collection run - log it,
+            # count it as a failure, and move on to the next reset.
+            try:
+                pick_xyz = self.run_plan(PLAN)
+                last_success, message = check_success(self.object_xyz, pick_xyz)
+                self.get_logger().info(message)
+            except Exception as exc:
+                self.get_logger().error(f"Episode {i + 1} failed: {exc!r}")
+                last_success = False
+
             successes += int(last_success)
 
         self._end_episode(success=last_success)

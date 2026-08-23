@@ -155,7 +155,11 @@
                       <joint name="arm_left_7_joint" class="xs" range="-2.61799 2.61799" actuatorfrcrange="-26 26" frictionloss="1" />
                       <geom class="visual" material="dark_medium_gray" mesh="arm_7_link" />
                       <geom class="visual" pos="0 0 0.017" material="dark_medium_gray" mesh="base_link_tc" />
-                      <site name="ee_left" pos="0 0 0.15"/>
+                      <!-- Same fix as ee_right - see the comment there. Measured independently
+                           via src/tools/diagnose_ee_frame.py (side=left): identical -90deg
+                           rotation about Y, confirmed stable (not mid-motion) from the first
+                           sample. -->
+                      <site name="ee_left" pos="-0.07600 -0.00243 0.17911" quat="-0.7071068 0 0.7071068 0"/>
                       <geom class="collision" name="col_ee_left" size="0.04 0.07" />
                       <geom class="collision" name="col_left_palm" type="box" pos="0 0 0.1025" size="0.01 0.035 0.025" />
                       <body name="gripper_left_inner_finger_left_link" pos="0 -0.013977 0.095832" quat="0.253401 0.660141 -0.253406 -0.660141">
@@ -236,7 +240,17 @@
                       <joint name="arm_right_7_joint" class="xs" range="-2.61799 2.61799" actuatorfrcrange="-26 26" frictionloss="1" />
                       <geom class="visual" material="dark_medium_gray" mesh="arm_7_link" />
                       <geom class="visual" pos="0 0 0.017" material="dark_medium_gray" mesh="base_link_tc" />
-                      <site name="ee_right" pos="0 0 0.15"/>
+                      <!-- ee_right previously had pos="0 0 0.15" with no quat (identity,
+                           inherited arm_right_7_link's orientation verbatim). Confirmed via
+                           src/tools/diagnose_ee_frame.py (compared this site's live pose against
+                           a TF lookup of gripper_right_grasping_link, the actual URDF frame
+                           OpenSoT/pose_commander command, across many different arm poses, letting
+                           it settle rather than reading mid-motion) that the two disagreed by a
+                           fixed -90deg rotation about Y and a fixed position offset - meaning
+                           every eef_right_pose/action pose recorded from this site for training
+                           was silently off relative to what actually gets commanded. Both fixed
+                           below to match gripper_right_grasping_link exactly. -->
+                      <site name="ee_right" pos="-0.07619 0.00094 0.17420" quat="-0.7071068 0 0.7071068 0"/>
                       <geom class="collision" name="col_ee_right" size="0.04 0.07" />
                       <geom class="collision" name="col_right_palm" type="box" pos="0 0 0.1025" size="0.01 0.035 0.025" />
                       <body name="gripper_right_inner_finger_left_link" pos="0 -0.013977 0.095832" quat="0.253401 0.660141 -0.253406 -0.660141">

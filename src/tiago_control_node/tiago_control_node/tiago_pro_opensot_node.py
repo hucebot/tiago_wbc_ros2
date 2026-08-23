@@ -48,7 +48,13 @@ class TiagoOpenSoTNode(Node):
             ('frames.world', "world"),
             ('base_frames.right_arm_task', "base_link"),
             ('base_frames.left_arm_task', "base_link"),
-            ('base_frames.base_task', "world")
+            ('base_frames.base_task', "world"),
+            # How long wait_for_initial_state() waits for real ros2_control hardware topics
+            # before falling back to home_config. Default (1.0s) is unchanged real-robot
+            # behavior; a sim bridge with no such hardware topics can set this to 0.0 via
+            # /<node_name>/set_parameters to skip the wait entirely instead of burning it
+            # every reset.
+            ('reset_hardware_timeout_sec', 1.0),
         ]
         self.declare_parameters(namespace='', parameters=param_defaults)
         self.get_logger().info("Parameters declared with defaults.")
@@ -58,6 +64,7 @@ class TiagoOpenSoTNode(Node):
         self.l_left = self.get_parameter('lambdas.gripper_left').value
         self.l_postural = self.get_parameter('lambdas.postural').value
         self.l_base = self.get_parameter('lambdas.base').value
+        self.reset_hardware_timeout_sec = self.get_parameter('reset_hardware_timeout_sec').value
 
         # --- Frames ---
         self.frame_right = self.get_parameter('frames.right_gripper').value
@@ -410,7 +417,7 @@ def main(args=None):
     model = xbi.ModelInterface2(node.urdf)
 
     # Initialize physical robot state
-    init_msg = node.wait_for_initial_state()
+    init_msg = node.wait_for_initial_state(timeout=node.reset_hardware_timeout_sec)
     q = node.from_state_msg(init_msg, model)
     model.setJointPosition(q)
     model.update()
@@ -434,7 +441,7 @@ def main(args=None):
             if node.needs_reset:
                 node.get_logger().info("RESETTING OpenSoT Model...")
                 node.reset_poses()
-                q = node.from_state_msg(node.wait_for_initial_state(), model)
+                q = node.from_state_msg(node.wait_for_initial_state(timeout=node.reset_hardware_timeout_sec), model)
                 node.needs_reset = False
 
                 model.setJointPosition(q)

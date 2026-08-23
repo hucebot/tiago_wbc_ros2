@@ -2,7 +2,7 @@ import os
 from launch import LaunchDescription
 from launch.actions import TimerAction, DeclareLaunchArgument
 from launch.substitutions import Command, PathJoinSubstitution, LaunchConfiguration, PythonExpression
-from launch.conditions import LaunchConfigurationEquals, LaunchConfigurationNotEquals, IfCondition
+from launch.conditions import LaunchConfigurationEquals, LaunchConfigurationNotEquals
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
@@ -16,33 +16,10 @@ def generate_launch_description():
         description='Robot model to use (dual or pro)'
     )
 
-    # MuJoCo simulated hardware bridge (Pro only, fixed-base arms+torso)
-    use_mujoco_sim_arg = DeclareLaunchArgument(
-        'use_mujoco_sim',
-        default_value='false',
-        description='Launch the MuJoCo simulated hardware bridge in place of the real Tiago Pro robot.'
-    )
-    mujoco_xml_path_arg = DeclareLaunchArgument(
-        'mujoco_xml_path',
-        default_value='/home/forest_ws/robots/pal_tiago_pro/xmls/scene_tiago_pro.xml',
-        description='Path to the tiago-pro-mujoco scene XML.'
-    )
-    episode_log_path_arg = DeclareLaunchArgument(
-        'episode_log_path',
-        default_value='/tmp/tiago_pro_episodes/dataset.h5',
-        description='Single HDF5 file mujoco_bridge_node appends one demo_N group to per successful episode.'
-    )
-    mujoco_viewer_arg = DeclareLaunchArgument(
-        'mujoco_viewer',
-        default_value='true',
-        description='Show the MuJoCo passive viewer window. Set false for faster headless data collection.'
-    )
-
     # State conditions (CLEANED)
     robot_model = LaunchConfiguration('robot_model')
     is_pro = LaunchConfigurationEquals('robot_model', 'pro')
     is_dual = LaunchConfigurationNotEquals('robot_model', 'pro')
-    use_mujoco_sim = LaunchConfiguration('use_mujoco_sim')
 
     # Setup Paths
     control_pkg_share = FindPackageShare('tiago_control_node')
@@ -141,22 +118,6 @@ def generate_launch_description():
         condition=is_pro
     )
 
-    # MuJoCo Simulated Hardware Bridge - Pro only
-    node_mujoco_bridge = Node(
-        package='tiago_pro_mujoco_bridge',
-        executable='mujoco_bridge_node',
-        name='tiago_pro_mujoco_bridge',
-        output='screen',
-        parameters=[{
-            'mujoco_xml_path': LaunchConfiguration('mujoco_xml_path'),
-            'episode_log_path': LaunchConfiguration('episode_log_path'),
-            'viewer': PythonExpression(["'", LaunchConfiguration('mujoco_viewer'), "' == 'true'"]),
-        }],
-        condition=IfCondition(PythonExpression([
-            "'", robot_model, "' == 'pro' and '", use_mujoco_sim, "' == 'true'"
-        ]))
-    )
-
     # Cartesian Interface Node
     node_cartesian_interface = Node(
         package='tiago_control_node',
@@ -179,14 +140,9 @@ def generate_launch_description():
     # Final Launch Description
     return LaunchDescription([
         robot_model_arg,
-        use_mujoco_sim_arg,
-        mujoco_xml_path_arg,
-        episode_log_path_arg,
-        mujoco_viewer_arg,
         node_tf_bridge_opensot,
         node_real_rsp,
         node_opensot_rsp,
         node_rviz,
-        node_mujoco_bridge,
         delayed_nodes
     ])
