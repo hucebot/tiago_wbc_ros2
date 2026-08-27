@@ -21,6 +21,7 @@ services:
     image: tiago_wbc_ros2:${TAG:-latest}
     container_name: opensot_deploy_instance
     volumes:
+      - /tmp:/tmp
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro
 
@@ -36,6 +37,7 @@ services:
     tty: true
     stdin_open: true
     volumes:
+      - /tmp:/tmp
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro
       - ./src:/home/forest_ws/src

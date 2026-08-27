@@ -14,12 +14,13 @@
             <Peers>
                 <Peer Address="10.68.0.1" />
                 <!-- <Peer Address="10.68.0.210" /> -->
-                <Peer Address="10.68.0.209" />
+                <!-- <Peer Address="10.68.0.209" /> -->
                 <!-- <Peer Address="10.68.0.221" /> -->
                 <Peer Address="localhost" />
             </Peers>
             <MaxAutoParticipantIndex>99</MaxAutoParticipantIndex>
         </Discovery>
+
         <Internal>
             <Watermarks>
                 <WhcHigh>2000kB</WhcHigh>
