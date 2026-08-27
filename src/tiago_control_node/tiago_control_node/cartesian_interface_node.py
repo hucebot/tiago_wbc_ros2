@@ -165,8 +165,8 @@ class CartesianInterface(Node):
 
         # --- PUBLISHERS ---
         self.pub_home_done = self.create_publisher(Bool, "/cartesian_interface/home_done", 10)
-        self.pub_target_r = self.create_publisher(PoseStamped, "/cartesian_interface/right/target_pose", 10)
-        self.pub_target_l = self.create_publisher(PoseStamped, "/cartesian_interface/left/target_pose", 10)
+        self.pub_target_r = self.create_publisher(PoseStamped, "/cartesian_interface/right/target_pose", 1)
+        self.pub_target_l = self.create_publisher(PoseStamped, "/cartesian_interface/left/target_pose", 1)
         self.pub_target_b = self.create_publisher(Twist, "/cartesian_interface/base/target_twist", 10)
         self.pub_reset_config = self.create_publisher(Bool, "/streamdeck/reset_config", 10)
         self.pub_pause_opensot = self.create_publisher(Bool, "/opensot/pause", 10)

@@ -40,7 +40,7 @@ class TiagoOpenSoTNode(Node):
             ('control_dt', 0.01),
             ('lambdas.gripper_right', 0.1),
             ('lambdas.gripper_left', 0.1),
-            ('lambdas.postural', 0.01),
+            ('lambdas.postural', 0.08),
             ('lambdas.base', 0.1),
             ('frames.right_gripper', "gripper_right_grasping_link"),
             ('frames.left_gripper', "gripper_left_grasping_link"),

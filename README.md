@@ -18,15 +18,7 @@ cd tiago_wbc_ros2
 git submodule update --init --recursive
 ```
 
-### 2. Build the Docker image
-
-Build the deployment image (this may take around 15 minutes the first time):
-
-```bash
-make build-deploy
-```
-
-### 3. Configure the environment
+### 2. Configure the environment
 
 Create a `.env` file from the provided template:
 
@@ -38,6 +30,14 @@ Then edit `.env` and set the `DDS_ENV` variable:
 
 - `local` — for local testing (recommended for the demo)
 - `robot` — to connect to the real robot
+
+### 3. Build the Docker image
+
+Build the deployment image (this may take around 40 minutes the first time):
+
+```bash
+make build-deploy
+```
 
 ### 4. Launch the demo
 

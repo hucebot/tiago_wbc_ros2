@@ -58,8 +58,8 @@ class TiagoOpenSoTNode(Node):
         self.active_collisions = {}
 
         # --- Subscribers/Publishers ---
-        self.create_subscription(PoseStamped, '/cartesian_interface/right/target_pose', self._right_target_cb, 10)
-        self.create_subscription(PoseStamped, '/cartesian_interface/left/target_pose', self._left_target_cb, 10)
+        self.create_subscription(PoseStamped, '/cartesian_interface/right/target_pose', self._right_target_cb, 1)
+        self.create_subscription(PoseStamped, '/cartesian_interface/left/target_pose', self._left_target_cb, 1)
         self.create_subscription(Twist, '/cartesian_interface/base/target_twist', self._base_target_cb, 10)
         self.create_subscription(Bool, '/streamdeck/reset_config', self._reset_cb, 10)
         self.create_subscription(MarkerArray, '/opensot/external_collisions', self._collision_scene_cb, 10)
