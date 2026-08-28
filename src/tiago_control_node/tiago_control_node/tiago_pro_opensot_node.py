@@ -436,16 +436,16 @@ def main(args=None):
                                 node.homing_target_q_full[idx] = node.homing_target_q[name]
                             idx += 1
 
-                    tasks["q_homing"].setWeight(0.1)
+                    tasks["q_homing"].setWeight(0.5)
                     # High lambda so it aggressively tracks the moving setpoint
-                    tasks["q_homing"].setLambda(0.05)
+                    tasks["q_homing"].setLambda(0.1)
 
                 # --- Interpolate trajectory ---
                 t = time.perf_counter() - node.homing_start_time
                 s = np.clip(t / node.homing_duration, 0.0, 1.0)
 
-                # Cubic ease-in/ease-out
-                alpha = 3*(s**2) - 2*(s**3)
+                # Linear: Moves at a constant speed from start to finish
+                alpha = s
 
                 q_ref_interp = node.homing_start_q + alpha * (node.homing_target_q_full - node.homing_start_q)
                 tasks["q_homing"].setReference(q_ref_interp)
@@ -505,7 +505,7 @@ def main(args=None):
                 tasks["gaze"].setLambda(0.0)
             else:
                 T = model.getPose("gripper_right_grasping_link", "base_link")
-                tasks["gaze"].setLambda(0.1)
+                tasks["gaze"].setLambda(0.025)
 
             # NOTE: Duplicate Cartesian command block removed from here!
 
