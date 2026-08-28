@@ -502,10 +502,11 @@ def main(args=None):
 
             # Gaze Task
             if node.gaze_locked:
-                tasks["gaze"].setLambda(0.0)
+                tasks["gaze"].setWeight(0.0)
+                # tasks["gaze"].setLambda(0.0)
             else:
                 T = model.getPose("gripper_right_grasping_link", "base_link")
-                tasks["gaze"].setLambda(0.025)
+                tasks["gaze"].setWeight(1.0)
 
             # NOTE: Duplicate Cartesian command block removed from here!
 
