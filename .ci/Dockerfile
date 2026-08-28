@@ -191,7 +191,7 @@
 # RUN echo 'if [ -f "/home/forest_ws/install/setup.bash" ]; then source "/home/forest_ws/install/setup.bash"; fi' >> ~/.bashrc
 # CMD ["/bin/bash"]
 
-FROM tiago_wbc_ros2 AS dep
+FROM dtotsila/tiago_wbc_ros2 as dep
 # Copy source code into the image
 COPY ./src /home/forest_ws/src
 
