@@ -5,11 +5,13 @@ OpenSoT. This is the file to read/edit if you want to change *what* the robot do
 engine that actually runs a PLAN (pose_commander.py's PoseCommander) doesn't know or care
 what's in it.
 
-`PLAN` is a sequence of waypoints for pose_commander.PoseCommander.run_plan(). Each waypoint
-moves whichever side(s) are present, simultaneously, then holds for 'hold' seconds before
-moving to the next one. Orientation can be given as 'rpy_deg' (roll, pitch, yaw in degrees)
-or 'quat' (x, y, z, w). A 'gripper' key commands the MuJoCo bridge directly, e.g.
-{'right': 'close'}.
+`PLAN` is a sequence of waypoints for pose_commander.PoseCommander.run_plan(), which splines
+ALL of them into one continuous motion (see its docstring) rather than running each in
+isolation - 'hold' is how many seconds after the PREVIOUS waypoint this one is reached, not
+a pause after arriving. A waypoint with no 'right'/'left' key (e.g. a gripper-only step)
+doesn't move that side at all - the spline just holds its position flat across that time
+span. Orientation can be given as 'rpy_deg' (roll, pitch, yaw in degrees) or 'quat' (x, y, z,
+w). A 'gripper' key commands the MuJoCo bridge directly, e.g. {'right': 'close'}.
 
 Position is given as 'xyz_rel', an [dx, dy, dz] offset added to the target object's xyz
 (captured once, at plan start) - or as 'xyz', an absolute base_link-frame position, for

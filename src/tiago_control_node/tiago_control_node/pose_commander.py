@@ -24,11 +24,14 @@ Gripper open/close commands go straight to the MuJoCo bridge on
 /mujoco_bridge/gripper_{side}/open (Bool: True=open, False=close) - they only
 take effect in simulation, there's no equivalent hardware topic here.
 """
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
-from scipy.spatial.transform import Rotation as R, Slerp
+from scipy.interpolate import PchipInterpolator
+from scipy.spatial.transform import Rotation as R, RotationSpline
+from tf2_ros import Buffer, TransformListener, TransformException
 
 
 class PoseCommander(Node):
@@ -37,8 +40,22 @@ class PoseCommander(Node):
 
         self.declare_parameter('base_frame', 'opensot/base_link')
         self.declare_parameter('publish_rate', 30.0)
+        # Same param names/defaults as tiago_pro_opensot_node.py's frames.*_gripper - these
+        # need to name the SAME links in the SAME (opensot ghost) TF tree that node solves
+        # for, since _get_current_pose() below reads it as "where OpenSoT currently has the
+        # arm", which is exactly what a target published straight to
+        # /cartesian_interface/{side}/target_pose is asking it to move away from.
+        self.declare_parameter('frames.right_gripper', 'gripper_right_grasping_link')
+        self.declare_parameter('frames.left_gripper', 'gripper_left_grasping_link')
         self.frame_id = self.get_parameter('base_frame').value
+        self.gripper_frames = {
+            'right': self.get_parameter('frames.right_gripper').value,
+            'left': self.get_parameter('frames.left_gripper').value,
+        }
         rate = self.get_parameter('publish_rate').value
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.pubs = {
             'right': self.create_publisher(PoseStamped, '/cartesian_interface/right/target_pose', 10),
@@ -50,8 +67,12 @@ class PoseCommander(Node):
         }
         self.targets = {'right': None, 'left': None}
         self.gripper_targets = {'right': None, 'left': None}
-        # (xyz, quat) of the last waypoint commanded per side, so the NEXT waypoint's
-        # motion can be interpolated from here rather than jumped to - see _move_to().
+        # (xyz, quat) of the last waypoint commanded per side, so the NEXT run_plan() call's
+        # spline can start from here rather than jumping to it - see _execute_spline(). None
+        # until a plan has actually moved that side at least once (or after clear_targets());
+        # run_plan() resolves a None here via a live TF lookup (_get_current_pose) instead of
+        # assuming the arm is already at the first waypoint, so the very first segment of a
+        # session/episode is a real spline from the arm's true current pose too, not a step.
         self._last_waypoint_pose = {'right': None, 'left': None}
         self.object_xyz = None
         self.create_subscription(
@@ -72,6 +93,34 @@ class PoseCommander(Node):
                 "Timed out waiting for /mujoco_bridge/target_object_pose - is the MuJoCo bridge running "
                 "with a valid target_object_joint?")
         self.get_logger().info(f"Target object at {self.object_xyz}")
+
+    def _osot(self, frame_id):
+        """Prefixes a plain frame name into OpenSoT's ghost TF tree - mirrors
+        cartesian_interface_node.py's identical helper. Idempotent (strips any existing
+        'opensot/' first) so it's safe to call on a frame that's already prefixed."""
+        clean = frame_id.replace('opensot/', '').lstrip('/')
+        return f'opensot/{clean}'
+
+    def _get_current_pose(self, side, timeout_sec=5.0):
+        """Live FK of the OpenSoT ghost's current gripper pose (base_frame -> gripper frame,
+        both in the opensot/ tree) - used by run_plan() to seed the spline's start point
+        when _last_waypoint_pose[side] is None, instead of assuming the arm is already at
+        the first waypoint (see that field's comment for why that assumption was wrong)."""
+        base_frame = self._osot(self.frame_id)
+        target_frame = self._osot(self.gripper_frames[side])
+        end_time = self.get_clock().now().nanoseconds / 1e9 + timeout_sec
+        while rclpy.ok():
+            try:
+                t = self.tf_buffer.lookup_transform(base_frame, target_frame, rclpy.time.Time())
+                pos, rot = t.transform.translation, t.transform.rotation
+                return [pos.x, pos.y, pos.z], [rot.x, rot.y, rot.z, rot.w]
+            except TransformException as exc:
+                if self.get_clock().now().nanoseconds / 1e9 > end_time:
+                    raise RuntimeError(
+                        f"Timed out waiting for TF {base_frame} -> {target_frame} - is "
+                        f"tiago_pro_opensot_node running? ({exc})"
+                    ) from exc
+                rclpy.spin_once(self, timeout_sec=0.1)
 
     def set_target(self, side, xyz, quat_xyzw):
         msg = PoseStamped()
@@ -103,11 +152,6 @@ class PoseCommander(Node):
             if is_open is not None:
                 self.gripper_pubs[side].publish(Bool(data=is_open))
 
-    def _spin_for(self, duration_sec):
-        end_time = self.get_clock().now().nanoseconds / 1e9 + duration_sec
-        while rclpy.ok() and self.get_clock().now().nanoseconds / 1e9 < end_time:
-            rclpy.spin_once(self, timeout_sec=0.05)
-
     def run_plan(self, plan):
         """Runs one pass of `plan` and returns the object xyz it was resolved against.
 
@@ -117,64 +161,127 @@ class PoseCommander(Node):
         the object is mid-air in the gripper), so reading it fresh per-waypoint would
         anchor later waypoints (transport/place) to the object's current in-hand
         position instead of where it started.
+
+        Builds ONE timeline for the whole plan (each waypoint's 'hold' becomes the time
+        it's reached at, not a pause after arriving) and hands it to _execute_spline() as
+        a single continuous motion, rather than running each waypoint as its own separate
+        linear interpolation. A per-waypoint LERP is only C0 continuous - velocity jumps
+        instantaneously at every waypoint boundary, and a gripper-only waypoint was a dead
+        stop (_spin_for) with a sudden restart after it. Splining the whole sequence at
+        once gives continuous velocity throughout, including through gripper-only holds
+        (see the "carry the last real target forward" comment below).
         """
         self.wait_for_object_pose()
         object_xyz = self.object_xyz
-        for i, waypoint in enumerate(plan):
-            hold = waypoint.get('hold', 3.0)
-            side_targets = {}
-            for side in ('right', 'left'):
-                if side not in waypoint:
-                    continue
-                xyz, quat = _resolve_pose(waypoint[side], object_xyz)
-                side_targets[side] = (xyz, quat)
-                self.get_logger().info(f"Waypoint {i + 1}/{len(plan)} [{side}]: xyz={xyz}")
 
+        # One knot list per side: (time, xyz, quat) tuples the spline must pass through.
+        knots = {'right': [], 'left': []}
+        gripper_events = []  # (time, side, status), fired during _execute_spline as t crosses them
+        last_target = dict(self._last_waypoint_pose)
+        t = 0.0
+
+        sides_used = {side for waypoint in plan for side in ('right', 'left') if side in waypoint}
+        for side in sides_used:
+            if last_target[side] is None:
+                last_target[side] = self._get_current_pose(side)
+                self.get_logger().info(
+                    f"No prior commanded pose for {side} - starting this plan's spline from "
+                    f"its live TF pose: xyz={last_target[side][0]}"
+                )
+        # last_target gets overwritten below as the plan's waypoints are walked - snapshot
+        # the resolved starting pose now, before that happens, to hand to _execute_spline.
+        start_poses = dict(last_target)
+
+        for i, waypoint in enumerate(plan):
+            hold = max(waypoint.get('hold', 3.0), 1e-3)  # keep knot times strictly increasing
+            # Gripper events fire at the START of this waypoint's window (t, before hold is
+            # added), not the end - matching the old _spin_for-based behavior (set the
+            # gripper, THEN wait `hold` seconds for it to actually move) instead of the
+            # spatial knots below, which are reached BY the end of their window. Firing at
+            # t_end instead (as an earlier version of this did) put the LAST waypoint's
+            # gripper event at exactly total_duration - the same instant _execute_spline's
+            # loop exits - leaving zero remaining spin time for the 30Hz _publish_targets
+            # timer to actually publish it before run_plan() returns. That's invisible in
+            # pose_commander.py's standalone main() (which keeps spinning indefinitely
+            # after run_plan() returns) but real in episode_manager.py's loop, where
+            # run_plan() returning goes straight into clear_targets() for the next episode -
+            # wiping gripper_targets back to None before the last command ever got sent.
             for side, status in waypoint.get('gripper', {}).items():
-                self.set_gripper(side, status)
+                gripper_events.append((t, side, status))
                 self.get_logger().info(f"Waypoint {i + 1}/{len(plan)} [gripper {side}]: {status}")
 
-            if side_targets:
-                self._move_to(side_targets, hold)
-            else:
-                self._spin_for(hold)  # gripper-only waypoint - nothing to move
+            t += hold
+            for side in ('right', 'left'):
+                if side in waypoint:
+                    xyz, quat = _resolve_pose(waypoint[side], object_xyz)
+                    last_target[side] = (xyz, quat)
+                    knots[side].append((t, xyz, quat))
+                    self.get_logger().info(f"Waypoint {i + 1}/{len(plan)} [{side}]: xyz={xyz}")
+                elif last_target[side] is not None:
+                    # This waypoint doesn't move this side (e.g. a gripper-only step) - add
+                    # a knot repeating its last real target at this time anyway, so the
+                    # spline holds still (PCHIP gives exactly zero velocity between two
+                    # equal-value knots - see _execute_spline) through this time span
+                    # instead of interpolating straight through to whatever the NEXT real
+                    # waypoint for this side turns out to be.
+                    xyz, quat = last_target[side]
+                    knots[side].append((t, xyz, quat))
 
+        self._execute_spline(knots, gripper_events, start_poses, total_duration=t)
         return object_xyz
 
-    def _move_to(self, side_targets, duration_sec):
-        """Publishes a continuously-interpolated target from each side's last commanded
-        pose to its new one over duration_sec, instead of jumping straight there and
-        holding a fixed value for the whole duration.
+    def _execute_spline(self, knots, gripper_events, start_poses, total_duration, dt=0.02):
+        """Publishes one smooth, continuous trajectory through every knot, instead of a
+        straight-line segment per waypoint. Position uses PchipInterpolator (not a plain
+        cubic spline): PCHIP is shape-preserving - it produces exactly zero velocity
+        between two knots that hold the same value, which is what a gripper-only "hold"
+        knot (see run_plan()) needs to actually mean "stay put", not just "revisit this
+        point in passing". A plain natural/clamped cubic spline can overshoot slightly
+        around a repeated value instead of sitting flat on it - fine for a random curve,
+        not for holding still while the gripper is actively closing around the object.
+        Orientation uses RotationSpline (scipy's C2-continuous rotation spline) - there's
+        no PCHIP equivalent for rotations, but a bit of overshoot there is far less
+        consequential than positional drift during a grasp.
 
-        This matters beyond just "looking smoother": the commanded pose here is exactly
-        what gets logged as actions/eef_{side}_pose (see mujoco_sim_node.py's
-        get_log_entry - it mirrors /cartesian_interface/{side}/target_pose, not ground
-        truth motion), and that's also true on the real robot, where it's driven by a
-        continuously-tracked Vive controller. Jumping-and-holding here would make a
-        scripted plan's recorded actions look like a handful of discrete steps instead of
-        the continuously-varying signal a human teleoperator produces - a training-data
-        mismatch, not just a visual one.
+        start_poses[side] = (xyz, quat) to start that side's spline from at t=0 - resolved
+        by run_plan() (from _last_waypoint_pose or a live TF lookup), not re-derived here.
         """
-        starts = {side: self._last_waypoint_pose[side] or pose for side, pose in side_targets.items()}
-        rotations = {
-            side: Slerp([0.0, 1.0], R.from_quat([starts[side][1], target_quat]))
-            for side, (_, target_quat) in side_targets.items()
-        }
+        splines = {}
+        for side, side_knots in knots.items():
+            if not side_knots:
+                continue
+            start_xyz, start_quat = start_poses[side]
+
+            times = np.asarray([0.0] + [knot[0] for knot in side_knots], dtype=np.float64)
+            xyzs = np.asarray([start_xyz] + [knot[1] for knot in side_knots], dtype=np.float64)
+            quats = np.asarray([start_quat] + [knot[2] for knot in side_knots], dtype=np.float64)
+
+            pos_spline = PchipInterpolator(times, xyzs, axis=0)
+            rot_spline = RotationSpline(times, R.from_quat(quats))
+            splines[side] = (pos_spline, rot_spline)
+
+        gripper_events = sorted(gripper_events, key=lambda e: e[0])
+        next_event = 0
 
         start_time = self.get_clock().now().nanoseconds / 1e9
         while rclpy.ok():
-            frac = 1.0 if duration_sec <= 0 else min(
-                1.0, (self.get_clock().now().nanoseconds / 1e9 - start_time) / duration_sec)
-            for side, (target_xyz, _) in side_targets.items():
-                start_xyz, _ = starts[side]
-                xyz = [(1 - frac) * s + frac * t for s, t in zip(start_xyz, target_xyz)]
-                quat = rotations[side](frac).as_quat().tolist()
-                self.set_target(side, xyz, quat)
-            rclpy.spin_once(self, timeout_sec=0.02)
-            if frac >= 1.0:
+            t = min(total_duration, self.get_clock().now().nanoseconds / 1e9 - start_time)
+
+            for side, (pos_spline, rot_spline) in splines.items():
+                self.set_target(side, pos_spline(t), rot_spline(t).as_quat())
+
+            while next_event < len(gripper_events) and gripper_events[next_event][0] <= t:
+                _, side, status = gripper_events[next_event]
+                self.set_gripper(side, status)
+                next_event += 1
+
+            rclpy.spin_once(self, timeout_sec=dt)
+            if t >= total_duration:
                 break
 
-        self._last_waypoint_pose.update(side_targets)
+        for side, (pos_spline, rot_spline) in splines.items():
+            self._last_waypoint_pose[side] = (
+                pos_spline(total_duration).tolist(), rot_spline(total_duration).as_quat().tolist())
 
 
 def _resolve_pose(spec, object_xyz):

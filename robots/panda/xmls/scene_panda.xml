@@ -1,0 +1,67 @@
+<mujoco model="scene">
+<include file="panda.xml"/>
+  <visual>
+      <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+      <rgba haze="0.15 0.25 0.35 1"/>
+      <global azimuth="160" elevation="-20"/>
+  </visual>
+
+  <asset>
+      <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+      <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+          markrgb="0.8 0.8 0.8" width="300" height="300"/>
+      <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+      <material name="table_wood" rgba="0.55 0.35 0.2 1"/>
+      <material name="cube_red" rgba="0.8 0.1 0.1 1"/>
+      <material name="basket_blue" rgba="0.2 0.3 0.8 1"/>
+  </asset>
+
+  <!-- Table/cube/basket geometry is a DELIBERATE, exact copy of
+       robots/pal_tiago_pro/xmls/scene_tiago_pro.xml's worldbody (same positions/sizes,
+       down to the comments) - this is a controlled ablation against TIAGo (see
+       panda_wbc_ablation_goal in project notes), so the physical task must stay identical
+       and only the robot changes. If you ever need to adjust the scene, adjust BOTH files
+       together or the comparison stops being valid. -->
+  <worldbody>
+      <body name="floor">
+          <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" contype="1" conaffinity="0"
+              priority="1" friction="0.8" condim="3"/>
+      </body>
+
+      <!-- Pick-and-place table: 0.6x0.6m top, 0.5m in front of the fixed base (moved 0.1m
+           closer than the original 0.6m - was too far for Panda's ~0.855m reach once
+           combined with a top-down grasp orientation and the transit/approach height
+           margins in pick_place_basket_panda.py's PLAN). -->
+      <body name="table" pos="0.5 0 0">
+          <geom name="table_top" type="box" size="0.3 0.3 0.015" pos="0 0 0.38" material="table_wood"/>
+          <geom name="table_leg_fl" type="box" size="0.015 0.015 0.1818" pos="0.25 0.25 0.1825" material="table_wood"/>
+          <geom name="table_leg_fr" type="box" size="0.015 0.015 0.1818" pos="0.25 -0.25 0.1825" material="table_wood"/>
+          <geom name="table_leg_bl" type="box" size="0.015 0.015 0.1818" pos="-0.25 0.25 0.1825" material="table_wood"/>
+          <geom name="table_leg_br" type="box" size="0.015 0.015 0.1818" pos="-0.25 -0.25 0.1825" material="table_wood"/>
+      </body>
+
+      <!-- Graspable cube, resting on the table top (free joint so it can be picked up).
+           Spawned on the right side of the table, in the arm's workspace. z=0.417 rests
+           flush on the table top (0.395 world height + cube half-size 0.02) - previously
+           left at the old (taller) table's resting height, spawning it floating ~10cm above
+           the current table top. -->
+      <body name="cube" pos="0.5 -0.15 0.417">
+          <freejoint name="cube_freejoint"/>
+          <inertial pos="0 0 0" mass="0.05" diaginertia="2e-5 2e-5 2e-5"/>
+          <geom name="cube_geom" type="box" size="0.02 0.02 0.02" material="cube_red"
+              friction="1.5 0.02 0.002" condim="4"/>
+      </body>
+
+      <!-- Basket the cube gets placed into: static (no freejoint), an open-top tray made of
+           a floor + 4 walls. Sits on the table's far edge (away from the robot), centered in
+           y - see BASKET_XY / BASKET_HOVER_Z in the panda pick_place_basket task, which must
+           match this. -->
+      <body name="basket" pos="0.58 0.1 0.395">
+          <geom name="basket_floor" type="box" size="0.08 0.08 0.0025" pos="0 0 0.0025" material="basket_blue"/>
+          <geom name="basket_wall_px" type="box" size="0.005 0.08 0.025" pos="0.075 0 0.03" material="basket_blue"/>
+          <geom name="basket_wall_nx" type="box" size="0.005 0.08 0.025" pos="-0.075 0 0.03" material="basket_blue"/>
+          <geom name="basket_wall_py" type="box" size="0.08 0.005 0.025" pos="0 0.075 0.03" material="basket_blue"/>
+          <geom name="basket_wall_ny" type="box" size="0.08 0.005 0.025" pos="0 -0.075 0.03" material="basket_blue"/>
+      </body>
+  </worldbody>
+</mujoco>

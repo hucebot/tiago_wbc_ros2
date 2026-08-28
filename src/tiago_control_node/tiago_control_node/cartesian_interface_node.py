@@ -366,6 +366,13 @@ class CartesianInterface(Node):
 
             self.get_logger().info(f"Sending to gripper {side}: {desired_state} ({target_pos})")
             self._send_gripper(side, target_pos)
+            # Also drive the MuJoCo bridge's gripper topic - _send_gripper only reaches
+            # the real robot's FollowJointTrajectory action server, which doesn't exist
+            # in sim, so a --sim replay's gripper commands (routed through this callback,
+            # same as /vive/{side}/gripper) would otherwise be silently ignored and the
+            # object never grasped. Harmless on real hardware: nothing subscribes to
+            # this topic there.
+            self.mujoco_gripper_pubs[side].publish(Bool(data=(desired_state == "OPEN")))
 
         self.gripper_btn_prev[side] = msg.point.x
 
@@ -380,7 +387,16 @@ class CartesianInterface(Node):
 
     def _send_gripper(self, side: str, pos: float) -> None:
         client = self.cli_gripper_left if side == "left" else self.cli_gripper_right
-        if not client.wait_for_server(timeout_sec=0.2):
+        # Non-blocking readiness check: this callback runs on the same single-threaded
+        # executor as the 100Hz _output_loop and the /motion_recorder & /vive pose
+        # subscriptions - client.wait_for_server(timeout_sec=...) blocks THIS THREAD (and
+        # therefore every other callback, since nothing else can run while it's blocked)
+        # for up to the full timeout on every gripper toggle. During a replay or a live
+        # teleop grasp, that stalls pose command publishing for the same window, and
+        # /motion_recorder/pose_{side}'s queue depth of 1 means whatever was published
+        # during the stall is gone by the time the executor wakes back up - silently
+        # dropping a chunk of the trajectory right at the grasp/release event.
+        if not client.server_is_ready():
             self.get_logger().warn(f"Gripper action server for {side} is not available! Ignoring command.")
             return
 
@@ -626,17 +642,23 @@ class CartesianInterface(Node):
                 target_pose = transformed.pose
 
         if target_pose is not None:
-            # SAFETY CHECK: Compare target with current FK pose
-            current_pose = self._get_fk_pose(side)
-            dist = np.sqrt(
-                (target_pose.position.x - current_pose.position.x)**2 +
-                (target_pose.position.y - current_pose.position.y)**2 +
-                (target_pose.position.z - current_pose.position.z)**2
-            )
-
-            # Threshol: 0.3 meters (30cm) is a safe limit for sudden jumps
-            # FIXME: this is too sensitive
-            # if dist > 0.3:
+            # SAFETY CHECK disabled (FIXME: threshold was too sensitive) - re-enable by
+            # restoring the FK-vs-target distance check below. Left disabled rather than
+            # just commented out: self._get_fk_pose() does a blocking
+            # tf_buffer.lookup_transform(timeout=1.0s), and calling it unconditionally
+            # every tick here (100Hz, both arms) on the same single-threaded executor as
+            # the /motion_recorder & /vive pose subscriptions stalled the whole node
+            # whenever TF lagged even briefly - and since those subscriptions have queue
+            # depth 1, any replay/teleop pose published during the stall was silently
+            # dropped, continuously through a trajectory, not just at isolated events.
+            #
+            # current_pose = self._get_fk_pose(side)
+            # dist = np.sqrt(
+            #     (target_pose.position.x - current_pose.position.x)**2 +
+            #     (target_pose.position.y - current_pose.position.y)**2 +
+            #     (target_pose.position.z - current_pose.position.z)**2
+            # )
+            # if dist > 0.3:  # 0.3m (30cm) is a safe limit for sudden jumps
             #     self.get_logger().warn(f"Safety violation: Jump of {dist:.2f}m detected for {side} arm! Ignoring command.")
             #     return
 

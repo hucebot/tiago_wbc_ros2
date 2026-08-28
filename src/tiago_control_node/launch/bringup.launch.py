@@ -2,7 +2,7 @@ import os
 from launch import LaunchDescription
 from launch.actions import TimerAction, DeclareLaunchArgument
 from launch.substitutions import Command, PathJoinSubstitution, LaunchConfiguration, PythonExpression
-from launch.conditions import LaunchConfigurationEquals, LaunchConfigurationNotEquals
+from launch.conditions import LaunchConfigurationEquals, LaunchConfigurationNotEquals, IfCondition
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
@@ -14,6 +14,15 @@ def generate_launch_description():
         'robot_model',
         default_value='pro',
         description='Robot model to use (dual or pro)'
+    )
+
+    # RViz2 subscribes to /joint_states and TF, adding DDS publish overhead to every node
+    # that publishes those - set false (e.g. for headless MuJoCo data collection) to rule
+    # that out as a bottleneck, same pattern as mujoco_bridge.launch.py's 'viewer' arg.
+    use_rviz_arg = DeclareLaunchArgument(
+        'use_rviz',
+        default_value='true',
+        description='Whether to launch RViz2.'
     )
 
     # State conditions (CLEANED)
@@ -95,7 +104,8 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='log',
-        arguments=['-d', rviz_config_file]
+        arguments=['-d', rviz_config_file],
+        condition=IfCondition(LaunchConfiguration('use_rviz'))
     )
 
     # OpenSoT Solver Node - Dual
@@ -140,6 +150,7 @@ def generate_launch_description():
     # Final Launch Description
     return LaunchDescription([
         robot_model_arg,
+        use_rviz_arg,
         node_tf_bridge_opensot,
         node_real_rsp,
         node_opensot_rsp,

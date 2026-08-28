@@ -11,8 +11,8 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument(
             'mujoco_xml_path',
-            default_value='/home/forest_ws/robots/pal_tiago_pro/xmls/scene_tiago_pro.xml',
-            description='Path to the tiago-pro-mujoco scene XML.'),
+            default_value='/home/forest_ws/robots/panda/xmls/scene_panda.xml',
+            description='Path to the Panda scene XML.'),
         DeclareLaunchArgument(
             'viewer',
             default_value='true',
@@ -20,15 +20,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'fps',
             default_value='90.0',
-            description='Physics/render loop rate (Hz). Must be >= episode_log_fps.'),
+            description='Physics/render loop rate (Hz).'),
         DeclareLaunchArgument(
             'episode_log_fps',
             default_value=LaunchConfiguration('fps'),
-            description='How often a step is appended to the episode log (Hz) - defaults to '
-                         'tracking fps (so fps:=120 alone gives 120Hz collection too, no need '
-                         'to set both), matching the real Tiago controller\'s rate by default '
-                         'since that\'s what Dont-Be-Brave/timid trains against. Set explicitly '
-                         'to log at a lower rate than the physics loop runs at.'),
+            description='How often a step is appended to the episode log (Hz) - defaults '
+                         'to tracking fps, same as mujoco_bridge.launch.py.'),
         DeclareLaunchArgument(
             'command_topic',
             default_value='/opensot/joint_states',
@@ -39,24 +36,21 @@ def generate_launch_description():
             description='Topic the sim publishes its own joint state on.'),
         DeclareLaunchArgument(
             'gripper_speed',
-            default_value='0.8',
-            description='Gripper open/close ramp speed (rad/s).'),
+            default_value='400.0',
+            description='Gripper open/close ramp speed - ctrl units/sec (0-255 range, not '
+                         'radians, since the gripper is one tendon-coupled actuator here).'),
         DeclareLaunchArgument(
             'target_object_joint',
             default_value='cube_freejoint',
             description='MuJoCo freejoint name of the object tracked/randomized for episodes.'),
         DeclareLaunchArgument(
             'episode_log_dir',
-            default_value='/tmp/tiago_pro_episodes',
-            description='Directory dataset files are saved into (matches the docker-compose '
-                         './data bind mount - avoid changing this unless you know it is '
-                         'mounted somewhere else too).'),
+            default_value='/tmp/panda_episodes',
+            description='Directory dataset files are saved into.'),
         DeclareLaunchArgument(
             'dataset_name',
             default_value='dataset',
-            description='Base filename (without .h5) for this collection run\'s HDF5 file - '
-                         'give different runs different names to keep them in separate files '
-                         'instead of always appending demo_N groups to the same one.'),
+            description='Base filename (without .h5) for this collection run\'s HDF5 file.'),
         DeclareLaunchArgument(
             'save_failed_episodes',
             default_value='false',
@@ -64,21 +58,22 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'object_x_range',
             default_value='[0.50, 0.65]',
-            description='Table-frame x range (meters) the object is respawned into.'),
+            description='Table-frame x range (meters) the object is respawned into - same '
+                         'as the TIAGo scene, physically identical table.'),
         DeclareLaunchArgument(
             'object_y_range',
             default_value='[-0.20, -0.10]',
             description='Table-frame y range (meters) the object is respawned into.'),
         DeclareLaunchArgument(
             'base_frame',
-            default_value='opensot/base_link',
+            default_value='opensot/link0',
             description='Frame the published target-object pose is expressed in.'),
     ]
 
-    node_mujoco_sim = Node(
-        package='tiago_pro_mujoco_bridge',
-        executable='mujoco_sim_node',
-        name='mujoco_sim_node',
+    node_panda_sim = Node(
+        package='panda_mujoco_bridge',
+        executable='panda_sim_node',
+        name='panda_sim_node',
         output='screen',
         parameters=[{
             'mujoco_xml_path': LaunchConfiguration('mujoco_xml_path'),
@@ -97,6 +92,10 @@ def generate_launch_description():
         }]
     )
 
+    # Reused directly from tiago_pro_mujoco_bridge, unmodified - it's already robot-agnostic
+    # (only coupled to topic/service names like /mujoco_bridge/sim/*, /opensot/reset_complete,
+    # not to joint counts or arm count - see project memory panda_wbc_ablation_goal), and
+    # panda_sim_node.py above implements the exact same service/topic contract it expects.
     node_episode_orchestrator = Node(
         package='tiago_pro_mujoco_bridge',
         executable='episode_orchestrator_node',
@@ -105,6 +104,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription(args + [
-        node_mujoco_sim,
+        node_panda_sim,
         node_episode_orchestrator,
     ])

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>panda_mujoco_bridge</name>
+  <version>0.1.0</version>
+  <description>MuJoCo-based simulated hardware bridge for the Franka Panda, standing in for a real robot on the panda_opensot_node/pose_commander pipeline - single-arm counterpart of tiago_pro_mujoco_bridge for the WBC ablation (see project memory panda_wbc_ablation_goal). Reuses tiago_pro_mujoco_bridge's EpisodeRecorder and episode_orchestrator_node directly (both already robot-agnostic).</description>
+  <maintainer email="iamtsac@gmail.com">Constantinos Tsakonas</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tiago_pro_mujoco_bridge</depend>
+  <depend>python3-h5py</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

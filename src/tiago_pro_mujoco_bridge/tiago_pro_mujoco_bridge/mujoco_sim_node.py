@@ -20,14 +20,23 @@ just how to do each individual step):
     (else MuJoCo's contact solver can find them overlapping and fling both apart).
   - /mujoco_bridge/sim/save_episode_log (SetBool, request.data=success): saves (or
     discards, per save_failed_episodes) the buffered episode.
+  - /mujoco_bridge/sim/set_object_pose (PoseStamped, topic not service): teleports the
+    object to an exact pose, bypassing object_x_range/object_y_range - for replaying a
+    recorded episode against the object pose it actually saw (obs/target_object_pose),
+    not a fresh random spawn.
+  - /mujoco_bridge/sim/set_joint_state (JointState, topic not service): teleports named
+    arm/torso joints straight to given positions, bypassing OpenSoT and the position-servo
+    actuators - for tiago_replay.py's --ground-truth mode (frame-perfect obs/joint_pos_real
+    playback, no tracking controller in the loop to diverge from the recording).
 
 The tiago-pro-mujoco XML is fixed-base and headless (no wheel or head joints), so
 base and head commands from OpenSoT are simply not applied here.
 
-Recording runs on its own timer at episode_log_fps, independent of the physics/render
-loop's fps - see main()'s loop and _log_step_cb below. episode_log_fps must not exceed
-fps, since ROS timers here can only fire as often as the main loop calls spin_once (once
-per physics/render iteration); __init__ warns loudly if that's misconfigured.
+Recording is paced by a wall-clock accumulator in main()'s loop (NOT a ROS timer - see
+that loop for why), so it can't run faster than episode_log_fps, and also can't run faster
+than the loop's own true achieved rate. episode_log_fps must not exceed fps: __init__ warns
+loudly if that's misconfigured, and the accumulator degrades gracefully to the loop's real
+rate rather than falling arbitrarily far behind it.
 """
 import os
 import time
@@ -98,6 +107,24 @@ HOME_VELOCITY_TOLERANCE_RAD_S = 0.01
 # TOLERANCE_RAD/settled_at_home exist for) can never clip it, unlike its normal on-table
 # spawn point which sits right in the arm's path.
 OBJECT_PARK_Z_OFFSET = 1.5
+
+# Extra rclpy.spin_once(timeout_sec=0) calls per render iteration, ON TOP OF the one
+# already interleaved before each physics substep in step_physics() (see its docstring).
+# Those per-substep calls handle the busy ~100Hz /opensot/joint_states stream; this extra
+# pass is only for everything else sharing the same executor (gripper toggles, resets,
+# services) - low-rate/on-demand, so a handful of calls is plenty. Each call is cheap
+# (returns immediately if nothing is ready) - a single spin_once() call dispatches AT MOST
+# ONE ready callback, which is what let a busy subscription starve out the (now removed)
+# recording timer before; keeping this small but >1 avoids reintroducing that same kind of
+# starvation for these lower-rate callbacks.
+MAX_SPINS_PER_STEP = 3
+
+# How often (seconds) main() logs a breakdown of where main-loop time is actually going -
+# see TIMING KEYS below. Purely observational (adds a few perf_counter() calls per
+# iteration, no effect on control/recording) - exists because "fps is lower than
+# requested" doesn't say WHY on its own, and guessing further without a measurement wastes
+# time better spent just looking at the actual breakdown.
+TIMING_LOG_PERIOD_SEC = 2.0
 
 
 class MujocoSimNode(Node):
@@ -215,12 +242,34 @@ class MujocoSimNode(Node):
                 float(self.model.qpos0[self.target_object_qpos_adr + 1]),
             )
 
-        self.recorder = EpisodeRecorder(episode_log_path, save_failed_episodes, logger=self.get_logger())
+        self.recorder = EpisodeRecorder(
+            episode_log_path, save_failed_episodes, self.episode_log_fps, logger=self.get_logger())
 
         self._reset_robot_home()
 
         self.command_sub = self.create_subscription(
             JointState, command_topic, self._command_cb, 10)
+
+        # eef_{side}_pose (both here and in `actions`, see get_log_entry()) is logged as
+        # this COMMANDED pose, not MuJoCo's achieved ground truth - matches what the real
+        # robot pipeline already does (it has no ground-truth "current achieved pose" signal
+        # to use instead, so it echoes the commanded value there too - see get_log_entry()'s
+        # docstring). Logging the achieved pose instead used to seem like free extra
+        # accuracy sim has and real doesn't, but it silently reintroduces OpenSoT's own
+        # tracking lag on replay: a script that republishes a recorded "achieved" pose as a
+        # NEW target has to converge to it all over again, so by the time a row's gripper
+        # event fires (tied to the ORIGINAL recording's timing, where that row's arm was
+        # already there), the replayed arm hasn't caught up yet - confirmed directly via
+        # tiago_replay.py, which closes the gripper on air. A policy trained on that
+        # achieved-pose signal would hit the exact same lag at inference, for the same
+        # reason - so this needs to be the commanded pose for both sim and real, not just
+        # for real.
+        self.commanded_pose = {'left': None, 'right': None}
+        for side in ('left', 'right'):
+            self.create_subscription(
+                PoseStamped, f'/cartesian_interface/{side}/target_pose',
+                lambda msg, s=side: self._commanded_pose_cb(s, msg), 10)
+
         self.joint_state_pub = self.create_publisher(
             JointState, joint_states_topic, 10)
         self.target_object_pose_pub = self.create_publisher(
@@ -235,8 +284,10 @@ class MujocoSimNode(Node):
         self.create_service(Trigger, '/mujoco_bridge/sim/reset_robot_home', self._reset_robot_home_cb)
         self.create_service(Trigger, '/mujoco_bridge/sim/randomize_object_pose', self._randomize_object_pose_cb)
         self.create_service(SetBool, '/mujoco_bridge/sim/save_episode_log', self._save_episode_log_cb)
-
-        self.create_timer(1.0 / self.episode_log_fps, self._log_step_cb)
+        self.create_subscription(
+            PoseStamped, '/mujoco_bridge/sim/set_object_pose', self._set_object_pose_cb, 10)
+        self.create_subscription(
+            JointState, '/mujoco_bridge/sim/set_joint_state', self._set_joint_state_cb, 10)
 
         self._apply_sim_reset_timeout_override()
 
@@ -275,9 +326,20 @@ class MujocoSimNode(Node):
     def _gripper_cmd_cb(self, side, msg: Bool):
         self.gripper_status[side] = 'open' if msg.data else 'close'
 
+    def _commanded_pose_cb(self, side, msg: PoseStamped):
+        """Latest /cartesian_interface/{side}/target_pose - see get_log_entry()/the
+        comment on self.commanded_pose in __init__ for why this, not MuJoCo's own ground
+        truth, is what gets logged as eef_{side}_pose. This scene is fixed-base with
+        base_link coincident with the MuJoCo world origin, so msg.pose is used directly, no
+        transform needed (same assumption target_object_pose/set_object_pose rely on)."""
+        p, q = msg.pose.position, msg.pose.orientation
+        self.commanded_pose[side] = np.array([p.x, p.y, p.z, q.x, q.y, q.z, q.w])
+
     def _sim_eef_pos_quatwxyz(self, side):
         """MuJoCo's own live ground-truth end-effector pose - position and (w,x,y,z)
-        quaternion, or (None, None) if this model has no 'ee_{side}' site."""
+        quaternion, or (None, None) if this model has no 'ee_{side}' site. Sim-only debug
+        signal (obs/eef_{side}_pos/_rot) - NOT what eef_{side}_pose/actions log, see
+        get_log_entry()."""
         sid = self.eef_site_id[side]
         if sid == -1:
             return None, None
@@ -324,6 +386,9 @@ class MujocoSimNode(Node):
         mujoco.mj_forward(self.model, self.data)
 
     def _reset_robot_home_cb(self, request, response):
+        # Redundant with save_and_clear() now also pausing (episode_orchestrator_node.py
+        # always calls save_episode_log before this) - kept as defense in depth for any
+        # other caller of this service that skips straight to a reset without saving first.
         self.recorder.pause()
         self._reset_robot_home()
         response.success = True
@@ -349,6 +414,24 @@ class MujocoSimNode(Node):
         response.message = "object respawned"
         return response
 
+    def _set_object_pose_cb(self, msg: PoseStamped):
+        """Teleports the target object to an explicit pose - for tiago_replay.py, which
+        needs the object sitting exactly where it was for the episode being replayed
+        (recorded per-step in obs/target_object_pose), not wherever
+        _randomize_object_pose() last happened to drop it. Bypasses the object_x_range/
+        object_y_range clamp on purpose: this is "put it back exactly here", not a fresh
+        randomized spawn."""
+        if self.target_object_qpos_adr is None:
+            self.get_logger().warn("set_object_pose: target_object_joint not configured, ignoring.")
+            return
+        adr = self.target_object_qpos_adr
+        p, q = msg.pose.position, msg.pose.orientation
+        self.data.qpos[adr:adr + 3] = [p.x, p.y, p.z]
+        self.data.qpos[adr + 3:adr + 7] = [q.w, q.x, q.y, q.z]
+        if self.target_object_dof_adr is not None:
+            self.data.qvel[self.target_object_dof_adr:self.target_object_dof_adr + 6] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+
     def _save_episode_log_cb(self, request, response):
         # An HDF5 write failure here (disk full, a stale in-memory demo counter colliding
         # with what's already in the file, ...) must not take the whole sim node down with
@@ -361,6 +444,7 @@ class MujocoSimNode(Node):
         except Exception as exc:
             self.get_logger().error(f"Failed to save episode log: {exc!r}")
             self.recorder.log_buffer = []
+            self.recorder._timestamps = []
             response.success = False
             response.message = f"save failed: {exc!r}"
         self.episode_idx += 1
@@ -395,12 +479,44 @@ class MujocoSimNode(Node):
             if name in self.target_positions:
                 self.target_positions[name] = pos
 
+    def _set_joint_state_cb(self, msg: JointState):
+        """Teleports arm/torso joints straight to given positions, bypassing OpenSoT and the
+        position-servo actuators entirely - for tiago_replay.py's --ground-truth mode, which
+        wants a frame-perfect visual reproduction of obs/joint_pos_real with no controller
+        in the loop to diverge from it.
+
+        Also updates target_positions (apply_targets()'s ctrl source), not just qpos -
+        otherwise the position servo would immediately start pulling the joint back toward
+        whatever it last held (e.g. still-default home config, if nothing else is driving
+        this sim) on the very next physics step, fighting the teleport instead of holding it.
+        """
+        for name, pos in zip(msg.name, msg.position):
+            if name in self.qpos_adr:
+                self.data.qpos[self.qpos_adr[name]] = pos
+                self.data.qvel[self.dof_adr[name]] = 0.0
+                self.target_positions[name] = pos
+        mujoco.mj_forward(self.model, self.data)
+
     def apply_targets(self):
         for joint_name, aid in self.actuator_id.items():
             self.data.ctrl[aid] = self.target_positions[joint_name]
 
-    def step_physics(self):
+    def step_physics(self, between_substeps=None):
+        """Runs steps_per_render physics substeps, calling between_substeps() (if given)
+        right before EACH one - see main()'s _step(). tiago_pro_opensot_node.py's control
+        loop has no substep concept at all: it publishes one new /opensot/joint_states per
+        control_dt (~10ms), one integration step each time. Applying only the latest
+        queued command once per OUTER (render) loop iteration - the old behavior here -
+        silently coalesces/discards every OpenSoT tick in between whenever this loop's own
+        true rate falls below OpenSoT's ~100Hz (which it always does to some degree, see
+        the fps warning above): the sim ends up tracking a stepped-down, jumpier version of
+        the trajectory OpenSoT actually computed, not what OpenSoT actually intended to
+        command. Re-checking for a new command before each substep instead keeps pace with
+        OpenSoT's own cadence far more closely, and costs nothing extra when there's
+        nothing new to apply."""
         for _ in range(self.steps_per_render):
+            if between_substeps is not None:
+                between_substeps()
             mujoco.mj_step(self.model, self.data)
 
     def get_log_entry(self) -> dict:
@@ -413,41 +529,48 @@ class MujocoSimNode(Node):
           - actions: single flat (16,) vector - [right_pos(3), right_quat(4), left_pos(3),
             left_quat(4), right_gripper(1), left_gripper(1)] - per _split_actions' slicing.
 
-        Both obs/eef_{side}_pose and the pose columns of actions are the ACTUAL end-effector
-        pose (MuJoCo's own ground truth, i.e. what obs/eef_{side}_pos/_rot below duplicate in
-        a different quaternion order), not the commanded /cartesian_interface/{side}/target_pose
-        - deliberately, even for a side this task never commands: the recorded state should be
-        what the effector is really doing (including any incidental whole-body coupling from
-        the torso/base helping the OTHER side reach its target) rather than a value the arm was
-        merely asked for and may not have exactly achieved.
+        Both obs/eef_{side}_pose and the pose columns of actions are the COMMANDED
+        /cartesian_interface/{side}/target_pose (see self.commanded_pose / _commanded_pose_cb),
+        matching exactly what the real robot pipeline already logs there (it has no
+        ground-truth "current achieved pose" signal to use instead, so it echoes the
+        commanded value - see _commanded_pose_cb's docstring). This USED to be MuJoCo's own
+        achieved ground truth instead, on the theory that sim could afford to be more
+        accurate than real and it'd transfer with some tuning - it doesn't: replaying a
+        recorded "achieved" pose as a NEW target reintroduces OpenSoT's own tracking lag on
+        top of the lag that already happened once during collection, which showed up
+        concretely as tiago_replay.py's gripper closing on air (the gripper event fires on
+        the original recording's schedule, but the replayed arm hasn't caught up to that
+        row's target yet). A policy trained on the achieved-pose signal would hit the same
+        lag at inference for the same reason, so this needs to match the real pipeline's
+        semantics, not just be more sim-accurate than necessary.
 
-        NOTE this is a deliberate sim-vs-real divergence, not a match: on the real robot,
-        eef_{side}_pose is the commanded Vive/teleop pose echoed through
-        /cartesian_interface/{side}/target_pose (there's no ground-truth "current achieved
-        pose" signal available in that pipeline to use instead). Sim has no such limitation -
-        MuJoCo's ground truth is free to read - so this uses it anyway: the sim is meant to be
-        a testbed for what representation/tuning actually works for the task, on the
-        assumption that whatever works here should transfer to the real robot with some
-        additional tuning, not to byte-for-byte reproduce the real pipeline's own workarounds
-        for signals it happens not to have. Revisit this if sim-trained policies don't
-        transfer cleanly and the eef_pose semantics turn out to be why.
+        A side this task never commands (no /cartesian_interface/{side}/target_pose
+        publisher running for it) falls back to MuJoCo's own ground truth pos/quat, then to
+        zeros if this model has no 'ee_{side}' site either - see the fallback chain below.
 
         Frame: this MuJoCo scene is fixed-base with base_link coincident with the MuJoCo world
-        origin, so raw world-frame site_xpos/site_xmat doubles as the base_link-frame pose
-        without any extra transform (same assumption target_object_pose below relies on).
+        origin, so raw world-frame poses double as the base_link-frame pose without any extra
+        transform (same assumption target_object_pose below, and _commanded_pose_cb, rely on).
 
-        obs/eef_{side}_pos/_rot duplicate the same ground truth in (w,x,y,z) MuJoCo quaternion
-        order - NOT part of the trained schema, harmless/ignored by DataSpec.filter if unused,
-        kept for convenience/debugging."""
+        obs/eef_{side}_pos/_rot are MuJoCo's own ground truth in (w,x,y,z) MuJoCo quaternion
+        order - sim-only, NOT part of the trained schema (unlike eef_{side}_pose above, these
+        are unchanged by the above), harmless/ignored by DataSpec.filter if unused, kept for
+        convenience/debugging (e.g. comparing achieved vs. commanded tracking error)."""
         obs = {}
         eef_pose_xyzw = {}
         for side in ('left', 'right'):
             pos, quat_wxyz = self._sim_eef_pos_quatwxyz(side)
-            action = np.zeros(7)
             if pos is not None:
                 obs[f'eef_{side}_pos'] = pos
-                obs[f'eef_{side}_rot'] = quat_wxyz  # (w, x, y, z) - MuJoCo ground truth, sim-only
+                obs[f'eef_{side}_rot'] = quat_wxyz  # (w, x, y, z) - MuJoCo ground truth, sim-only, debug only
+
+            commanded = self.commanded_pose[side]
+            if commanded is not None:
+                action = commanded
+            elif pos is not None:
                 action = np.concatenate([pos, quat_wxyz[[1, 2, 3, 0]]])
+            else:
+                action = np.zeros(7)
             eef_pose_xyzw[side] = action
             obs[f'eef_{side}_pose'] = action
 
@@ -516,34 +639,164 @@ def main(args=None):
 
     viewer_ctx = mujoco.viewer.launch_passive(node.model, node.data) if node.use_viewer else None
 
+    # Wall-clock-paced replacement for the old create_timer(episode_log_fps, ...): a ROS
+    # timer can only ever fire when spin_once() happens to dispatch it, which made recording
+    # inherit both spin_once's one-callback-per-call limit (see MAX_SPINS_PER_STEP above) AND
+    # this loop's own true achieved rate - capping it well below episode_log_fps regardless
+    # of what fps/episode_log_fps were configured to. See _maybe_log() below for how
+    # next_log_time is scheduled (a fixed cadence, not re-anchored to whenever it last
+    # fired) and why that distinction turned out to matter a lot in practice.
+    log_period = 1.0 / node.episode_log_fps
+    next_log_time = time.perf_counter()
+
+    def _maybe_log(now):
+        """Fires _log_step_cb() on a FIXED schedule (next_log_time += log_period every
+        time it fires), not by re-anchoring to whenever it happened to actually fire
+        (next_log_time = now + log_period, the old - buggy - version of this). The
+        difference matters a lot in practice: with re-anchoring, a SINGLE iteration that
+        runs even a couple ms long (ordinary jitter, not a real stall - see the loop_period
+        diagnostic, which stays a rock-solid ~11.13ms average even while this bug was
+        active) permanently pushes the next scheduled fire time later too, since the new
+        schedule is computed FROM that late timestamp - so the very next (perfectly normal)
+        iteration can fall just short of the pushed-back threshold and skip a log
+        opportunity it should have gotten. That one skip doesn't get corrected either,
+        since the next fire re-anchors again - each bit of ordinary jitter costs a
+        permanent recording opportunity instead of a one-off delay. This is what was
+        capping recorded fps around ~60Hz despite a verified, steady ~90Hz loop: it's not
+        that the loop was actually slow, it's that this gate kept discarding opportunities
+        the loop was genuinely providing. A fixed schedule self-corrects instead: an
+        iteration running long just means that tick's log call happens a bit late, but the
+        NEXT tick is still due at the ideal time, not further delayed by the last one's
+        lateness. The clamp below only matters if the loop is persistently (not just for
+        one iteration) slower than episode_log_fps - without it, a real, sustained slowdown
+        would let next_log_time fall further behind every iteration, then burst-fire many
+        queued-up catch-up logs in a row the moment the loop caught back up."""
+        nonlocal next_log_time
+        if now >= next_log_time:
+            node._log_step_cb()
+            next_log_time += log_period
+            if next_log_time < now - log_period:
+                next_log_time = now
+
+    def _substep_update():
+        """Runs right before EACH physics substep (see step_physics()'s docstring): pick
+        up the newest queued /opensot/joint_states, if one has arrived, and apply it -
+        instead of applying only whatever was queued once per whole render iteration."""
+        rclpy.spin_once(node, timeout_sec=0)
+        node.apply_targets()
+
+    def _step():
+        """Returns (physics_dt, spin_dt) - see the timing breakdown below main()'s loop.
+        physics_dt now includes the per-substep spin_once calls (see _substep_update) -
+        they're not separable from stepping any more, since they're interleaved with it."""
+        node.actuate_grippers()
+        t0 = time.perf_counter()
+        node.step_physics(between_substeps=_substep_update)
+        t1 = time.perf_counter()
+        # Extra drain for everything NOT on command_topic (gripper toggles, resets,
+        # services) - see MAX_SPINS_PER_STEP's comment.
+        for _ in range(MAX_SPINS_PER_STEP):
+            rclpy.spin_once(node, timeout_sec=0)
+        t2 = time.perf_counter()
+        return (t1 - t0), (t2 - t1)
+
+    # Accumulators for the periodic timing breakdown (TIMING_LOG_PERIOD_SEC) - see that
+    # constant's comment for why this exists. 'total' is compute only (everything in the
+    # loop body BEFORE the end-of-iteration sleep - physics/spin/viewer_sync/publish and
+    # anything not separately measured, e.g. the get_log_entry() call when it fires).
+    # 'loop_period' is the actual wall-clock time from one iteration's start to the next -
+    # i.e. compute + sleep - and is the number that actually determines achieved Hz. The
+    # two can and do diverge: 'total' can be a small fraction of the 1/fps budget while
+    # 'loop_period' still comes out much longer, because time.sleep() on Linux has no hard
+    # guarantee of waking up at the requested time - under any real scheduler contention
+    # (several ROS nodes/containers sharing a CPU) it commonly overshoots by several ms,
+    # and a naive time.sleep(sleep_time) has no way to compensate. 'sleep_requested' vs
+    # 'sleep_actual' below makes that overshoot directly visible instead of inferred.
+    timing = {
+        'physics': 0.0, 'spin': 0.0, 'viewer_sync': 0.0, 'publish': 0.0, 'total': 0.0,
+        'sleep_requested': 0.0, 'sleep_actual': 0.0, 'loop_period': 0.0,
+    }
+    timing_iters = 0
+    last_timing_log = time.perf_counter()
+    prev_iter_start = None
+
+    def _sleep_precise(duration):
+        """Sleeps most of `duration` coarsely, then busy-spins on perf_counter() for the
+        last ~1.5ms - see the comment on 'loop_period' above for why a plain time.sleep()
+        can't be trusted to hit a short duration precisely. Trades a bit of CPU (up to
+        ~1.5ms of busy-waiting per iteration) for actually achieving the requested pacing
+        instead of silently overshooting it every single iteration."""
+        end = time.perf_counter() + duration
+        coarse = duration - 0.0015
+        if coarse > 0:
+            time.sleep(coarse)
+        while time.perf_counter() < end:
+            pass
+
     try:
         while rclpy.ok() and (viewer_ctx is None or viewer_ctx.is_running()):
             start = time.perf_counter()
+            if prev_iter_start is not None:
+                timing['loop_period'] += start - prev_iter_start
+            prev_iter_start = start
 
             if viewer_ctx is not None:
-                # spin_once is inside the lock too: the sim/* services write data.qpos
-                # directly, and the passive viewer reads data from its own render thread -
-                # an unlocked reset would race it.
+                # Everything here (including logging) is inside the lock too: the sim/*
+                # services write data.qpos directly, and the passive viewer reads data from
+                # its own render thread - an unlocked reset/log read would race it.
                 with viewer_ctx.lock():
-                    node.apply_targets()
-                    node.actuate_grippers()
-                    node.step_physics()
-                    rclpy.spin_once(node, timeout_sec=0)
+                    physics_dt, spin_dt = _step()
+                    _maybe_log(time.perf_counter())
+                t_sync0 = time.perf_counter()
                 viewer_ctx.sync()
+                viewer_sync_dt = time.perf_counter() - t_sync0
             else:
-                node.apply_targets()
-                node.actuate_grippers()
-                node.step_physics()
-                rclpy.spin_once(node, timeout_sec=0)
+                physics_dt, spin_dt = _step()
+                _maybe_log(time.perf_counter())
+                viewer_sync_dt = 0.0
 
+            t_pub0 = time.perf_counter()
             node.publish_joint_state()
             node.publish_target_object_pose()
             node.publish_settled_at_home()
+            publish_dt = time.perf_counter() - t_pub0
 
             elapsed = time.perf_counter() - start
-            sleep_time = (1.0 / node.fps) - elapsed
+
+            sleep_time = max(0.0, (1.0 / node.fps) - elapsed)
             if sleep_time > 0:
-                time.sleep(sleep_time)
+                t_sleep0 = time.perf_counter()
+                _sleep_precise(sleep_time)
+                sleep_actual = time.perf_counter() - t_sleep0
+            else:
+                sleep_actual = 0.0
+
+            timing['physics'] += physics_dt
+            timing['spin'] += spin_dt
+            timing['viewer_sync'] += viewer_sync_dt
+            timing['publish'] += publish_dt
+            timing['total'] += elapsed
+            timing['sleep_requested'] += sleep_time
+            timing['sleep_actual'] += sleep_actual
+            timing_iters += 1
+            now = time.perf_counter()
+            if now - last_timing_log >= TIMING_LOG_PERIOD_SEC:
+                n = timing_iters
+                budget_ms = 1000.0 / node.fps
+                node.get_logger().info(
+                    f"main-loop timing (avg over {n} iters, "
+                    f"{n / timing['loop_period']:.1f}Hz achieved, budget {budget_ms:.2f}ms @ fps={node.fps}): "
+                    f"physics={1000 * timing['physics'] / n:.2f}ms "
+                    f"spin={1000 * timing['spin'] / n:.2f}ms "
+                    f"viewer_sync={1000 * timing['viewer_sync'] / n:.2f}ms "
+                    f"publish={1000 * timing['publish'] / n:.2f}ms "
+                    f"compute_total={1000 * timing['total'] / n:.2f}ms "
+                    f"sleep_requested={1000 * timing['sleep_requested'] / n:.2f}ms "
+                    f"sleep_actual={1000 * timing['sleep_actual'] / n:.2f}ms "
+                    f"loop_period={1000 * timing['loop_period'] / n:.2f}ms")
+                timing = {k: 0.0 for k in timing}
+                timing_iters = 0
+                last_timing_log = now
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down due to KeyboardInterrupt...")
     finally:
