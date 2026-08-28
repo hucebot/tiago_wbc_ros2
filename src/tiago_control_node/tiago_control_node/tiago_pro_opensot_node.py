@@ -87,7 +87,7 @@ class TiagoOpenSoTNode(Node):
         self.homing_active = False
         self.is_currently_homing = False
         self.homing_target_q = {}
-        self.homing_duration = 1. # Time to complete homing motion in seconds
+        self.homing_duration = 0.5 # Time to complete homing motion in seconds
         self.homing_start_time = 0.0
         self.homing_start_q = None
         self.homing_target_q_full = None
@@ -464,7 +464,7 @@ def main(args=None):
                 q_err = np.sqrt(q_err)
 
                 # Ensure interpolation time has elapsed AND error is low
-                if s >= 1.0 and q_err < 0.05:
+                if s >= 1.0 and q_err < 0.2:
                     node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
                     node.homing_active = False
                     node.is_currently_homing = False
@@ -502,10 +502,10 @@ def main(args=None):
 
             # Gaze Task
             if node.gaze_locked:
-                tasks["gaze"].setGaze(T_Gaze_0)
+                tasks["gaze"].setLambda(0.0)
             else:
                 T = model.getPose("gripper_right_grasping_link", "base_link")
-                tasks["gaze"].setGaze(T)
+                tasks["gaze"].setLambda(0.1)
 
             # NOTE: Duplicate Cartesian command block removed from here!
 
