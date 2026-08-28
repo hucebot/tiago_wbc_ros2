@@ -30,6 +30,11 @@ from pyopensot.constraints.velocity import JointLimits, VelocityLimits
 from pyopensot.tasks.velocity import Postural, Cartesian, Manipulability, Gaze
 from pyopensot_collision.constraints.velocity import CollisionAvoidance
 
+# OpenSoT velocity-space (dq) layout: 6 floating base + 4 wheels + torso + 7 left arm + 7 right arm + 2 head.
+# Confirmed against pub_to_control_bridge()'s existing dq[10] torso lookup.
+TORSO_DQ_IDX = 10
+ARM_LEFT_DQ_SLICE = slice(11, 18)
+
 
 class TiagoOpenSoTNode(Node):
     def __init__(self):
@@ -55,6 +60,10 @@ class TiagoOpenSoTNode(Node):
             # /<node_name>/set_parameters to skip the wait entirely instead of burning it
             # every reset.
             ('reset_hardware_timeout_sec', 1.0),
+            # Hard-freezes the joint(s) at whatever pose they hold when the node starts/resets
+            # (velocity limit is pinned to 0, so the solver can never move them again).
+            ('disable_left_arm', False),
+            ('disable_torso', False),
         ]
         self.declare_parameters(namespace='', parameters=param_defaults)
         self.get_logger().info("Parameters declared with defaults.")
@@ -65,6 +74,8 @@ class TiagoOpenSoTNode(Node):
         self.l_postural = self.get_parameter('lambdas.postural').value
         self.l_base = self.get_parameter('lambdas.base').value
         self.reset_hardware_timeout_sec = self.get_parameter('reset_hardware_timeout_sec').value
+        self.disable_left_arm = self.get_parameter('disable_left_arm').value
+        self.disable_torso = self.get_parameter('disable_torso').value
 
         # --- Frames ---
         self.frame_right = self.get_parameter('frames.right_gripper').value
@@ -331,6 +342,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     manip_right = Manipulability(model, g_right)
     gaze = Gaze("Gaze", model, "base_link", "head_front_camera_link")
 
+
     # --- Constraints ---
     qmin, qmax = model.getJointLimits()
     qlims = JointLimits(model, qmax, qmin)
@@ -338,6 +350,16 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
 
     base_con = Cartesian("Base_Con", model, node.frame_base, node.frame_world)
     base_con.setLambda(node.l_base)
+
+    if node.disable_left_arm:
+        g_left.setActive(False)
+        manip_left.setActive(False)
+
+    if node.disable_torso:
+        torso_masked = [True] * model.getNv()
+        torso_masked[TORSO_DQ_IDX] = False
+        for t in (g_left, g_right, base, base_con):
+            t.setActiveJointsMask(torso_masked)
 
     # Setup specific collision pairs
     collision_pairs_path = os.path.join(

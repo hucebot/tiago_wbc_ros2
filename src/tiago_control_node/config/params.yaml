@@ -1,6 +1,10 @@
-tiago_dual_control:
+/**:
   ros__parameters:
     control_dt: 0.025 # 100Hz
+
+    # Hard-freezes the joint(s) at whatever pose they hold when the node starts/resets.
+    disable_left_arm: true
+    disable_torso: false
 
     # Task Gains (Lambdas)
     lambdas:

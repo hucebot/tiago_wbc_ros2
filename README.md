@@ -111,6 +111,30 @@ which don't have to (and here, mostly don't) match the underlying parameter name
 |---|---|---|
 | `robot_model` | `pro` | `pro` or `dual` - which Tiago variant's URDF/OpenSoT stack to bring up. |
 
+#### Excluding the left arm / torso (single-arm data collection)
+
+`tiago_pro_opensot_node` (the node `bringup.launch.py robot_model:=pro` starts) reads two extra
+booleans from `config/params.yaml` - useful when you only want the right arm active for a
+demonstration and don't want the left arm or torso wandering into the dataset:
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `disable_left_arm` | `false` | Deactivates the left-arm's Cartesian and manipulability tasks. |
+| `disable_torso` | `false` | Excludes torso from the Cartesian tasks' active-joints mask. |
+
+Both are read once at node startup (inside `setup_opensot_stack()`), not live - edit
+`params.yaml` and relaunch `bringup.launch.py`; `ros2 param set` on an already-running node has
+no effect.
+
+**Neither flag is a hard lock.** `disable_left_arm` only deactivates `g_left`/`manip_left` - the
+arm is still free to be pulled by whatever else touches it (Postural, collision avoidance), it
+isn't pinned to a fixed joint position. `disable_torso` only excludes torso from the *Cartesian*
+tasks' Jacobians - `manip_left`/`manip_right` (Manipulability tasks, not Cartesian) aren't
+masked, so they can still move it, and `CollisionAvoidance` isn't a `Task` at all so it's never
+masked either. If you need a true hard freeze at a fixed pose (e.g. for perfectly reproducible
+episodes), zero the corresponding entries of `VelocityLimits` instead - see `TORSO_DQ_IDX` /
+`ARM_LEFT_DQ_SLICE` in `tiago_pro_opensot_node.py`.
+
 #### `mujoco_bridge.launch.py` arguments
 
 | Argument | Default | Purpose |
