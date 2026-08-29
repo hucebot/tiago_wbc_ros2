@@ -327,7 +327,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     pro_collision_list = [(linkA, linkB) for pair in pro_collision_json["collision_list"] for linkA, linkB in [sorted(pair)]]
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
-    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing + gaze) /
+    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing ) /
              (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)) \
              << qlims << dqlims << collision_avoidance << base_con % [2, 3, 4]
 
