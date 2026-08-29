@@ -510,8 +510,11 @@ def main(args=None):
             if not node.homing_active:
                 if node.gaze_locked:
                     tasks["gaze"].setLambda(0.0)
+                    tasks["gaze"].setWeight(0.0)
+
                 else:
                     tasks["gaze"].setLambda(1.0)
+                    tasks["gaze"].setWeight(0.2)
 
 
             # NOTE: Duplicate Cartesian command block removed from here!
