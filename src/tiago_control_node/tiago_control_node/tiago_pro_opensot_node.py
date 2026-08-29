@@ -311,8 +311,21 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     gaze = Gaze("Gaze", model, "base_link", "head_front_camera_link")
 
     qmin, qmax = model.getJointLimits()
-    qmax_padded = qmax - (qmax-qmin) * 0.025
-    qmin_padded = qmin + (qmax-qmin) * 0.025
+    qmax_padded = np.copy(qmax)
+    qmin_padded = np.copy(qmin)
+
+    idx = 7
+    for name in model.getJointNames():
+        if name == 'reference':
+            continue
+
+        # Only pad the arms
+        if "arm_left" in name or "arm_right" in name:
+            joint_range = qmax[idx] - qmin[idx]
+            qmax_padded[idx] = qmax[idx] - joint_range * 0.025
+            qmin_padded[idx] = qmin[idx] + joint_range * 0.025
+
+        idx += 1  # Increment by exactly 1 for ALL joints
 
     qlims = JointLimits(model, qmax_padded, qmin_padded)
     dqlims = VelocityLimits(model, model.getVelocityLimits(), node.dt)
