@@ -463,16 +463,22 @@ def main(args=None):
                         idx += 1
                 q_err = np.sqrt(q_err)
 
-                # Ensure interpolation time has elapsed AND error is low
-                if s >= 1.0 and q_err < 0.2:
-                    node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
+                # Ensure interpolation time has elapsed AND (error is low OR timeout hit)
+                # Give it an extra 1.5 seconds to settle after the interpolation finishes
+                time_limit_exceeded = t > (node.homing_duration + 1.5)
+
+                if s >= 1.0 and (q_err < 0.2 or time_limit_exceeded):
+                    if time_limit_exceeded:
+                        node.get_logger().warn(f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})")
+                    else:
+                        node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
+
                     node.homing_active = False
                     node.is_currently_homing = False
 
                     tasks["left"].reset()
                     tasks["right"].reset()
 
-                    # ---> ADD THIS LINE <---
                     # Reset the postural task to current joints so it doesn't jump backwards!
                     tasks["postural"].setReference(q)
                     tasks["postural"].setLambda(0.1)
@@ -500,13 +506,12 @@ def main(args=None):
                     else:
                         task.reset()
 
-            # Gaze Task
-            if node.gaze_locked:
-                # tasks["gaze"].setWeight(0.0)
-                tasks["gaze"].setLambda(0.0)
-            else:
-                # T = model.getPose("gripper_right_grasping_link", "base_link")
-                tasks["gaze"].setLambda(1.0)
+            # Gaze Task (ONLY update lambda if we are NOT homing!)
+            if not node.homing_active:
+                if node.gaze_locked:
+                    tasks["gaze"].setLambda(0.0)
+                else:
+                    tasks["gaze"].setLambda(1.0)
 
 
             # NOTE: Duplicate Cartesian command block removed from here!
