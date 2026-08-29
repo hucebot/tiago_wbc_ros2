@@ -81,7 +81,7 @@ class TiagoOpenSoTNode(Node):
         self.enable_external_obstacle = False
         self.active_collisions = {}
         self.is_paused = False
-        self.gaze_locked = False
+        self.gaze_locked = True
 
         # Homing States
         self.homing_active = False
@@ -327,7 +327,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     pro_collision_list = [(linkA, linkB) for pair in pro_collision_json["collision_list"] for linkA, linkB in [sorted(pair)]]
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
-    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing ) /
+    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing + gaze ) /
              (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)) \
              << qlims << dqlims << collision_avoidance << base_con % [2, 3, 4]
 
@@ -410,6 +410,14 @@ def main(args=None):
             model.setJointPosition(q)
             model.update()
 
+            model.setJointPosition(q)
+            model.update()
+
+            # Tell the robot what to look at (e.g., the right gripper)
+            if not node.homing_active:
+                T_target = model.getPose("gripper_right_grasping_link", "base_link")
+                tasks["gaze"].setGaze(T_target)
+
             # --- NATIVE HOMING PROCEDURE ---
             if node.homing_active:
                 if not node.is_currently_homing:
@@ -485,7 +493,7 @@ def main(args=None):
 
                     tasks["left"].setLambda(node.l_left)
                     tasks["right"].setLambda(node.l_right)
-                    tasks["gaze"].setLambda(1.0)
+                    tasks["gaze"].setLambda(0.1)
                     tasks["q_homing"].setWeight(0.0)
 
                     node.target_right = None
@@ -508,15 +516,17 @@ def main(args=None):
 
             # Gaze Task (ONLY update lambda if we are NOT homing!)
             if not node.homing_active:
+                # Fetch the exact dimension the task expects (likely 3)
+                gaze_dim = tasks["gaze"].getTaskSize()
+
                 if node.gaze_locked:
                     tasks["gaze"].setLambda(0.0)
-                    tasks["gaze"].setWeight(0.0)
-
+                    # Safely set an all-zero matrix of the correct size
+                    tasks["gaze"].setWeight(np.zeros((gaze_dim, gaze_dim)))
                 else:
                     tasks["gaze"].setLambda(1.0)
-                    tasks["gaze"].setWeight(0.2)
-
-
+                    # Safely set a scaled identity matrix of the correct size
+                    tasks["gaze"].setWeight(np.eye(gaze_dim))
             # NOTE: Duplicate Cartesian command block removed from here!
 
             # Base Commands
