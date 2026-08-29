@@ -191,7 +191,48 @@
 # RUN echo 'if [ -f "/home/forest_ws/install/setup.bash" ]; then source "/home/forest_ws/install/setup.bash"; fi' >> ~/.bashrc
 # CMD ["/bin/bash"]
 
-FROM dtotsila/tiago_wbc_ros2 as dep
+FROM dtotsila/tiago_wbc_ros2 as dev
+COPY ./tiago_pro_capsules.urdf /home/ros2_ws/src/tiago_dual_cartesio_config/capsules/urdf/tiago_pro_capsules.urdf
+COPY ./tiago_pro_capsules_collision_pairs.json /home/ros2_ws/src/tiago_dual_cartesio_config/capsules/urdf/tiago_pro_capsules_collision_pairs.json
+
+# Resolve any missing dependencies for these packages via rosdep
+WORKDIR /home/ros2_ws
+RUN apt-get update && \
+    rosdep update && \
+    rosdep install -y -r -q --from-paths src --ignore-src --rosdistro humble && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN source /opt/ros/humble/setup.bash && colcon build --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+    rm -rf build log
+
+RUN echo "source /home/ros2_ws/install/local_setup.bash" >> ~/.bashrc
+
+# Persistent Environment Setup
+ENV PYTHONPATH="/home/.base/lib/python3.10/site-packages:/home/forest_ws/install/lib/python3.10/site-packages:/usr/lib/python3/dist-packages:${PYTHONPATH}"
+ENV LD_LIBRARY_PATH="/home/forest_ws/install/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/home/.base/bin:${PATH}"
+ENV CMAKE_PREFIX_PATH="/home/forest_ws/install:${CMAKE_PREFIX_PATH}"
+
+# --- STAGE 2: Dev (For Local Mounting) ---
+FROM base AS prebuilt
+WORKDIR /home/forest_ws
+
+# Copy OpenSoT code into the image
+COPY ./external/OpenSoT /home/forest_ws/code/OpenSoT
+
+# Build OpenSoT
+WORKDIR /home/forest_ws/code/build
+RUN source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
+    cmake -DCMAKE_INSTALL_PREFIX:STRING=/home/forest_ws/install \
+          -DCMAKE_BUILD_TYPE:STRING=Release \
+          -DCMAKE_PREFIX_PATH="/home/forest_ws/install;/opt/ros/humble" \
+          ../OpenSoT && \
+    make -j2 && make install && \
+    rm -rf /home/forest_ws/code/build
+
+FROM dev as dep
+
+
 # Copy source code into the image
 COPY ./src /home/forest_ws/src
 
