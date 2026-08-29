@@ -327,7 +327,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     pro_collision_list = [(linkA, linkB) for pair in pro_collision_json["collision_list"] for linkA, linkB in [sorted(pair)]]
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
-    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing) /
+    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing + gaze) /
              (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)) \
              << qlims << dqlims << collision_avoidance << base_con % [2, 3, 4]
 
@@ -464,10 +464,10 @@ def main(args=None):
                 q_err = np.sqrt(q_err)
 
                 # Ensure interpolation time has elapsed AND (error is low OR timeout hit)
-                # Give it an extra 1.5 seconds to settle after the interpolation finishes
-                time_limit_exceeded = t > (node.homing_duration + 1.5)
+                # Give it an extra 2.0 seconds to settle after the interpolation finishes
+                time_limit_exceeded = t > (node.homing_duration + 2.0)
 
-                if s >= 1.0 and (q_err < 0.2 or time_limit_exceeded):
+                if s >= 1.0 and time_limit_exceeded:
                     if time_limit_exceeded:
                         node.get_logger().warn(f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})")
                     else:

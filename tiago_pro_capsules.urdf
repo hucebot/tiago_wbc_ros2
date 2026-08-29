@@ -2234,7 +2234,7 @@
       <origin xyz="-0.015008 0.049747 0.0"
         rpy="-1.5707962027325257 -0.35947462451750345 0.3594745808745366" />
       <geometry>
-        <cylinder radius="0.026903" length="0.110491" />
+        <cylinder radius="0.045" length="0.110491" />
       </geometry>
     </collision>
 
@@ -2243,7 +2243,7 @@
       <origin xyz="0.004426 -0.001967 0.0"
         rpy="-1.5707962027325257 -0.35947462451750345 0.3594745808745366" />
       <geometry>
-        <sphere radius="0.026903" />
+        <sphere radius="0.045" />
       </geometry>
     </collision>
 
@@ -2252,7 +2252,7 @@
       <origin xyz="-0.034442 0.101461 0.0"
         rpy="-1.5707962027325257 -0.35947462451750345 0.3594745808745366" />
       <geometry>
-        <sphere radius="0.026903" />
+        <sphere radius="0.045" />
       </geometry>
     </collision>
   </link>
