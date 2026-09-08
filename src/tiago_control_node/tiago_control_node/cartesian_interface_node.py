@@ -63,8 +63,12 @@ class CartesianInterface(Node):
         # --- Parameters & Config ---
         self.declare_parameter("robot_model", "dual")
         self.declare_parameter("robot_description", "")
+        self.declare_parameter("joy.scale_linear", 0.3)
+        self.declare_parameter("joy.scale_angular", 0.3)
         self.model_type = self.get_parameter("robot_model").value
         self.urdf = self.get_parameter("robot_description").value
+        self.joy_scale_linear = self.get_parameter("joy.scale_linear").value
+        self.joy_scale_angular = self.get_parameter("joy.scale_angular").value
 
         if not self.urdf:
             self.get_logger().error("URDF not provided via parameters. Meshes will fail.")
@@ -468,11 +472,11 @@ class CartesianInterface(Node):
         except TransformException:
             return None
 
-    def _scale_twist(self, twist: Twist, scale: float = 0.3) -> Twist:
+    def _scale_twist(self, twist: Twist, lin_scale: float = 0.3, ang_scale: float = 0.3) -> Twist:
         scaled = Twist()
-        scaled.linear.x = twist.linear.x * scale
-        scaled.linear.y = twist.linear.y * scale
-        scaled.angular.z = twist.angular.z * scale
+        scaled.linear.x = twist.linear.x * lin_scale
+        scaled.linear.y = twist.linear.y * lin_scale
+        scaled.angular.z = twist.angular.z * ang_scale
         return scaled
 
     def _apply_smoothing(self, target: Twist, current: Twist, alpha: float) -> Twist:
@@ -529,7 +533,7 @@ class CartesianInterface(Node):
     def _process_base_commands(self) -> None:
         raw_target_b = Twist()
         if self.base_teleop_mode == "joystick":
-            raw_target_b = self._scale_twist(self.joy_twist)
+            raw_target_b = self._scale_twist(self.joy_twist, self.joy_scale_linear, self.joy_scale_angular)
         elif self.base_teleop_mode == "navigation":
             raw_target_b = self.nav_twist
         elif self.base_teleop_mode == "vive":

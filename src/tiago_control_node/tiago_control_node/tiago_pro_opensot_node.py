@@ -88,6 +88,8 @@ class TiagoOpenSoTNode(Node):
         self.is_currently_homing = False
         self.homing_target_q = {}
         self.homing_duration = 0.5 # Time to complete homing motion in seconds
+        self.homing_settle = 2.0   # Extra seconds allowed to converge after interpolation
+        self.homing_tol = 0.05     # rad RMS joint error that counts as "home"
         self.homing_start_time = 0.0
         self.homing_start_q = None
         self.homing_target_q_full = None
@@ -185,10 +187,12 @@ class TiagoOpenSoTNode(Node):
 
     def pub_to_control_bridge(self, joint_state_msg, q, dq):
         joint_state_msg.header.stamp = self.get_clock().now().to_msg()
-        joint_state_msg.position[0] = np.arctan2(np.sin(q[8]), np.cos(q[7]))
-        joint_state_msg.position[1] = np.arctan2(np.sin(q[10]), np.cos(q[9]))
-        joint_state_msg.position[2] = np.arctan2(np.sin(q[12]), np.cos(q[11]))
-        joint_state_msg.position[3] = np.arctan2(np.sin(q[14]), np.cos(q[13]))
+        # Continuous wheel joints are stored as (cos, sin) pairs at q[7..14];
+        # recover the angle with atan2(sin, cos) on the *same* pair.
+        joint_state_msg.position[0] = np.arctan2(q[8], q[7])
+        joint_state_msg.position[1] = np.arctan2(q[10], q[9])
+        joint_state_msg.position[2] = np.arctan2(q[12], q[11])
+        joint_state_msg.position[3] = np.arctan2(q[14], q[13])
         joint_state_msg.position[4:] = array.array('d', q[15:])
         joint_state_msg.velocity = array.array('d', [0.0] * len(joint_state_msg.position))
         joint_state_msg.velocity[4] = dq[10] / self.dt
@@ -314,7 +318,10 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     qmax_padded = np.copy(qmax)
     qmin_padded = np.copy(qmin)
 
-    idx = 7
+    # getJointLimits() is VELOCITY-space sized (nv): 6 floating-base DOF, then one
+    # entry per joint -- continuous "wheel" joints are 1 DOF here (unlike in q,
+    # where they take 2 slots). So walk it as: start at 6, step every joint by 1.
+    idx = 6
     for name in model.getJointNames():
         if name == 'reference':
             continue
@@ -325,7 +332,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
             qmax_padded[idx] = qmax[idx] - joint_range * 0.025
             qmin_padded[idx] = qmin[idx] + joint_range * 0.025
 
-        idx += 1  # Increment by exactly 1 for ALL joints
+        idx += 1
 
     qlims = JointLimits(model, qmax_padded, qmin_padded)
     dqlims = VelocityLimits(model, model.getVelocityLimits(), node.dt)
@@ -484,15 +491,17 @@ def main(args=None):
                         idx += 1
                 q_err = np.sqrt(q_err)
 
-                # Ensure interpolation time has elapsed AND (error is low OR timeout hit)
-                # Give it an extra 2.0 seconds to settle after the interpolation finishes
-                time_limit_exceeded = t > (node.homing_duration + 2.0)
+                # Finish once the interpolation has elapsed AND (error is low OR we hit the
+                # settle timeout). Previously this only checked the timeout, so homing never
+                # completed early and always logged "timed out".
+                converged = q_err < node.homing_tol
+                time_limit_exceeded = t > (node.homing_duration + node.homing_settle)
 
-                if s >= 1.0 and time_limit_exceeded:
-                    if time_limit_exceeded:
-                        node.get_logger().warn(f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})")
-                    else:
+                if s >= 1.0 and (converged or time_limit_exceeded):
+                    if converged:
                         node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
+                    else:
+                        node.get_logger().warn(f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})")
 
                     node.homing_active = False
                     node.is_currently_homing = False

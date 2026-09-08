@@ -1,7 +1,10 @@
-version: '3.8'
+# Deployment only. For a live-code dev shell use `make dev` (plain `docker run`
+# with ./src bind-mounted) -- there is no dev service here anymore.
 
 # Shared configs
 x-shared-config: &shared-config
+  # host networking + privileged: the demo talks to the robot / RViz over DDS on
+  # the host and needs the host X socket. Tighten if you ever run this untrusted.
   network_mode: "host"
   privileged: true
   ipc: host
@@ -11,33 +14,19 @@ x-shared-config: &shared-config
     - ROS_DOMAIN_ID=2
     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     - DDS_ENV=${DDS_ENV:-local}
-    # CHANGE THIS LINE:
-    - CYCLONEDDS_URI=/home/configs/cyclonedds_${DDS_ENV:-local}.xml
+    # CYCLONEDDS_URI is set by .ci/entrypoint.sh from DDS_ENV (single owner).
 
 services:
   # DEPLOYMENT SERVICE (Uses Image)
+  # Robot selection: ROBOT_MODEL=pro (default) or ROBOT_MODEL=dual.
+  #   make tiago-pro   ->  ROBOT_MODEL=pro
+  #   make tiago       ->  ROBOT_MODEL=dual
   opensot_deploy:
     <<: *shared-config
     image: tiago_wbc_ros2:${TAG:-latest}
     container_name: opensot_deploy_instance
+    command: ros2 launch tiago_control_node bringup.launch.py robot_model:=${ROBOT_MODEL:-pro}
     volumes:
       - /tmp:/tmp
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro
-
-  # DEVELOPMENT SERVICE (Uses Build + Local Mounts)
-  opensot_dev:
-    <<: *shared-config
-    image: tiago_wbc_ros2:${TAG:-latest}-dev
-    container_name: opensot_dev_instance
-    build:
-      context: .
-      dockerfile: .ci/Dockerfile
-      target: dev
-    tty: true
-    stdin_open: true
-    volumes:
-      - /tmp:/tmp
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./configs/:/home/configs:ro
-      - ./src:/home/forest_ws/src

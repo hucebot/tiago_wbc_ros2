@@ -14,8 +14,21 @@
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>builtin_interfaces</depend>
   <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
   <depend>visualization_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>interactive_markers</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-scipy</depend>
+  <depend>python3-urdfdom-py</depend>
+
+  <!-- Runtime-only, not on rosdep: pyopensot, pyopensot_collision, xbot2_interface.
+       These come from the prebuilt image (see .ci/Dockerfile / .ci/Dockerfile.base). -->
+
+  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

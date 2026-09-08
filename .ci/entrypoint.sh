@@ -25,16 +25,15 @@ export PYTHONPATH="/home/forest_ws/install/lib/python3.10/site-packages:/usr/lib
 export LD_LIBRARY_PATH="/home/forest_ws/install/lib/roboptim-core:/home/forest_ws/install/lib:$LD_LIBRARY_PATH"
 
 
-# CycloneDDS Auto-Configuration
-# Reads the DDS_ENV variable from your docker-compose/.env and automatically applies the correct XML profile!
-if [ "$DDS_ENV" = "local" ]; then
-    export CYCLONEDDS_URI="file:///home/configs/cyclonedds_local.xml"
-    echo "🟢 [Entrypoint] Network Mode: LOCAL (Loopback Only)"
-elif [ "$DDS_ENV" = "robot" ]; then
-    export CYCLONEDDS_URI="file:///home/configs/cyclonedds_robot.xml"
-    echo "🔴 [Entrypoint] Network Mode: ROBOT (Hardware Connected)"
+# CycloneDDS auto-configuration. Single owner of CYCLONEDDS_URI: picks
+# /home/configs/cyclonedds_<DDS_ENV>.xml (mounted from ./configs) if it exists.
+DDS_ENV="${DDS_ENV:-local}"
+DDS_PROFILE="/home/configs/cyclonedds_${DDS_ENV}.xml"
+if [ -f "$DDS_PROFILE" ]; then
+    export CYCLONEDDS_URI="file://${DDS_PROFILE}"
+    echo "[Entrypoint] CycloneDDS profile: ${DDS_PROFILE} (DDS_ENV=${DDS_ENV})"
 else
-    echo "🟡 [Entrypoint] Network Mode: DEFAULT (No DDS profile applied)"
+    echo "[Entrypoint] No CycloneDDS profile for DDS_ENV='${DDS_ENV}' (${DDS_PROFILE} missing); using DDS defaults"
 fi
 
 # Execute the command passed to the container

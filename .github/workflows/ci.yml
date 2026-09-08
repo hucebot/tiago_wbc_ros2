@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, devel-dionisis]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      # Prebuilt dependency stack (ROS + Pinocchio + xbot2 + OpenSoT + solvers).
+      # See .ci/Dockerfile.base for how this image is produced.
+      image: dtotsila/tiago_wbc_ros2
+      options: --entrypoint ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          (apt-get update && apt-get install -y --no-install-recommends python3-pytest) \
+            || pip3 install --no-cache-dir pytest
+
+      - name: colcon build
+        run: |
+          /entrypoint.sh bash -c '
+            set -euo pipefail
+            colcon build --packages-select tiago_control_node \
+              --cmake-args -DCMAKE_BUILD_TYPE=Release
+          '
+
+      - name: colcon test
+        run: |
+          /entrypoint.sh bash -c '
+            set -euo pipefail
+            source install/setup.bash
+            colcon test --packages-select tiago_control_node --event-handlers console_direct+
+            colcon test-result --verbose
+          '
