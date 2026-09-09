@@ -19,7 +19,7 @@ tiago_pro_opensot_control:
       gripper_right: 0.1
       postural: 0.08
       base: 0.1
-      gaze: 1.0              # drop toward ~0.3 if the head motion is jerky
+      gaze: 0.3
 
     frames:
       world: "world"

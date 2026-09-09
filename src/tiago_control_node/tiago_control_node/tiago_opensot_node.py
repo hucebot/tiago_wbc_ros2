@@ -55,6 +55,7 @@ except ImportError:  # older pyopensot builds
 
 from pyopensot_collision.constraints.velocity import CollisionAvoidance
 
+from tiago_control_node.homing import HomingInterpolator
 from tiago_control_node.utils import (
     EPS_REGULARISATION,
     ObstacleData,
@@ -139,16 +140,7 @@ class TiagoOpenSoTNode(Node):
         self.gaze_locked = True
         self.home_settle_until = 0.0  # ignore incoming arm targets until this time
 
-        # Homing state machine
-        self.homing_active = False
-        self.is_currently_homing = False
-        self.homing_target_q = {}
-        self.homing_target_q_full = None
-        self.homing_start_q = None
-        self.homing_start_time = 0.0
-        self.homing_duration = 0.5  # seconds of interpolation
-        self.homing_settle = 2.0  # extra seconds allowed to converge
-        self.homing_tol = 0.05  # rad RMS error that counts as "home"
+        self.homing = HomingInterpolator(duration=0.5, settle=2.0, tol=0.05)
 
         # --- Subscribers ---
         qos_state = QoSProfile(
@@ -259,8 +251,7 @@ class TiagoOpenSoTNode(Node):
     def _home_cmd_cb(self, msg: String):
         if msg.data in self.home_configs:
             self.get_logger().info(f"Received native homing command for: {msg.data}")
-            self.homing_target_q = self._build_home_q(self.home_configs[msg.data])
-            self.homing_active = True
+            self.homing.request(self._build_home_q(self.home_configs[msg.data]))
         else:
             self.get_logger().warn(f"Unknown home config: {msg.data}")
 
@@ -541,14 +532,6 @@ def sync_external_collisions(node: TiagoOpenSoTNode, collision_avoidance):
             collision_avoidance.setCollisionShapeActive(obj_id, node.enable_external_obstacle)
 
 
-def _homing_rms_error(q, node, qidx):
-    err = 0.0
-    for name, target in node.homing_target_q.items():
-        if name in qidx and qidx[name] < len(q):
-            err += (q[qidx[name]] - target) ** 2
-    return np.sqrt(err)
-
-
 def _hold_cartesian(task, model, frame, base):
     """Pin a Cartesian task's reference to the frame's current pose, zero twist."""
     cur = model.getPose(frame, base)
@@ -607,26 +590,18 @@ def main(args=None):
             model.update()
 
             # Keep the gaze pointed at the right gripper while not homing.
-            if "gaze" in tasks and not node.homing_active:
+            if "gaze" in tasks and not node.homing.active:
                 tasks["gaze"].setGaze(model.getPose(node.frame_right, node.frame_base))
 
             # --- Native homing procedure ---
             # Steer q_homing, postural AND both arm Cartesian references to the
             # same interpolated config every tick: every task pulls the same way,
             # so there is no priority fight and no completion handoff.
-            if node.homing_active:
-                if not node.is_currently_homing:
-                    node.is_currently_homing = True
+            if node.homing.active:
+                if not node.homing.started:
+                    node.homing.start(q, qidx)
                     node.get_logger().info("Starting native OpenSoT homing...")
                     node.target_base_twist = Twist()
-
-                    node.homing_start_time = time.perf_counter()
-                    node.homing_start_q = np.copy(q)
-                    node.homing_target_q_full = np.copy(q)
-                    for name, target in node.homing_target_q.items():
-                        if name in qidx and qidx[name] < len(q):
-                            node.homing_target_q_full[qidx[name]] = target
-
                     tasks["q_homing"].setWeight(0.5)
                     tasks["q_homing"].setLambda(0.1)
                     tasks["postural"].setLambda(0.1)
@@ -638,10 +613,7 @@ def main(args=None):
                 node.target_right = None
                 node.target_left = None
 
-                elapsed_home = time.perf_counter() - node.homing_start_time
-                s = float(np.clip(elapsed_home / node.homing_duration, 0.0, 1.0))
-                q_ref = node.homing_start_q + s * (node.homing_target_q_full - node.homing_start_q)
-
+                s, q_ref = node.homing.q_ref()
                 tasks["q_homing"].setReference(q_ref)
                 tasks["postural"].setReference(q_ref)
 
@@ -659,20 +631,16 @@ def main(args=None):
                 model.setJointPosition(q)
                 model.update()
 
-                q_err = _homing_rms_error(q, node, qidx)
-                converged = q_err < node.homing_tol
-                timed_out = elapsed_home > (node.homing_duration + node.homing_settle)
+                q_err = node.homing.rms_error(q, qidx)
 
-                if s >= 1.0 and (converged or timed_out):
-                    if converged:
+                if node.homing.should_finish(s, q_err):
+                    if q_err < node.homing.tol:
                         node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
                     else:
                         node.get_logger().warn(
                             f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})"
                         )
-
-                    node.homing_active = False
-                    node.is_currently_homing = False
+                    node.homing.finish()
 
                     # No handoff: every reference is already at the home config.
                     tasks["q_homing"].setWeight(0.0)
@@ -706,7 +674,7 @@ def main(args=None):
                         _hold_cartesian(task, model, frame, base)
 
             # Gaze weight / lambda (only when not homing).
-            if "gaze" in tasks and not node.homing_active:
+            if "gaze" in tasks and not node.homing.active:
                 gaze_dim = tasks["gaze"].getTaskSize()
                 if node.gaze_locked:
                     tasks["gaze"].setLambda(0.0)

@@ -248,3 +248,9 @@ src/tiago_control_node/  the ROS 2 package (nodes, launch, params, rviz, tests)
 docker-compose.yaml      opensot_deploy service
 Makefile                 tiago / tiago-pro / dev / build-deploy / down
 ```
+
+---
+
+## License
+
+BSD 3-Clause — see [LICENSE](LICENSE).

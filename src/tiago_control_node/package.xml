@@ -5,7 +5,7 @@
   <version>0.5.0</version>
   <description>Tiago OpenSoT Control Node</description>
   <maintainer email="dionis.totsila@inria.fr">Dionis Totsila</maintainer>
-  <license>TODO</license>
+  <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 

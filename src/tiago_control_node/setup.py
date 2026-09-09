@@ -21,7 +21,7 @@ setup(
     maintainer="Dionis Totsila",
     maintainer_email="dionis.totsila@inria.fr",
     description="Tiago OpenSoT Control Node",
-    license="TODO",
+    license="BSD-3-Clause",
     entry_points={
         "console_scripts": [
             "tiago_opensot_node = tiago_control_node.tiago_opensot_node:main",

@@ -40,6 +40,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from xbot2_interface import pyaffine3, pyxbot2_collision
 from xbot2_interface import pyxbot2_interface as xbi
 
+from tiago_control_node.homing import HomingInterpolator
 from tiago_control_node.utils import (
     EPS_REGULARISATION,
     ObstacleData,
@@ -103,18 +104,8 @@ class TiagoOpenSoTNode(Node):
         # Runtime gaze toggle via /opensot/gaze_lock; starts active when gaze is enabled.
         self.gaze_locked = not self.enable_gaze
         self.home_settle_until = 0.0  # ignore incoming arm targets until this time
-        self._post_home_check = 0.0  # one-shot post-homing sanity log
 
-        # Homing States
-        self.homing_active = False
-        self.is_currently_homing = False
-        self.homing_target_q = {}
-        self.homing_duration = 0.5  # Time to complete homing motion in seconds
-        self.homing_settle = 2.0  # Extra seconds allowed to converge after interpolation
-        self.homing_tol = 0.05  # rad RMS joint error that counts as "home"
-        self.homing_start_time = 0.0
-        self.homing_start_q = None
-        self.homing_target_q_full = None
+        self.homing = HomingInterpolator(duration=0.5, settle=2.0, tol=0.05)
 
         # --- Subscribers ---
         qos_state = QoSProfile(
@@ -164,8 +155,7 @@ class TiagoOpenSoTNode(Node):
     def _home_cmd_cb(self, msg: String):
         if msg.data in self.home_configs:
             self.get_logger().info(f"Received native homing command for: {msg.data}")
-            self.homing_target_q = self._build_home_q(self.home_configs[msg.data])
-            self.homing_active = True
+            self.homing.request(self._build_home_q(self.home_configs[msg.data]))
         else:
             self.get_logger().warn(f"Unknown home config: {msg.data}")
 
@@ -559,7 +549,7 @@ def main(args=None):
             model.update()
 
             # Point the head at the right gripper while not homing.
-            if "gaze" in tasks and not node.homing_active:
+            if "gaze" in tasks and not node.homing.active:
                 tasks["gaze"].setGaze(model.getPose(node.frame_right, node.frame_base))
 
             # --- NATIVE HOMING PROCEDURE ---
@@ -567,19 +557,11 @@ def main(args=None):
             # same interpolated config every tick. Every task then pulls the same
             # way, so there is no priority fight and no completion handoff: when
             # the interpolation ends everything is already at the home config.
-            if node.homing_active:
-                if not node.is_currently_homing:
-                    node.is_currently_homing = True
+            if node.homing.active:
+                if not node.homing.started:
+                    node.homing.start(q, qidx)
                     node.get_logger().info("Starting native OpenSoT homing...")
                     node.target_base_twist = Twist()
-
-                    node.homing_start_time = time.perf_counter()
-                    node.homing_start_q = np.copy(q)
-                    node.homing_target_q_full = np.copy(q)
-                    for name, idx in q_index_map(model).items():
-                        if name in node.homing_target_q and idx < len(node.homing_target_q_full):
-                            node.homing_target_q_full[idx] = node.homing_target_q[name]
-
                     tasks["q_homing"].setWeight(0.5)
                     tasks["q_homing"].setLambda(0.1)
                     tasks["postural"].setLambda(0.1)
@@ -591,12 +573,7 @@ def main(args=None):
                 node.target_right = None
                 node.target_left = None
 
-                elapsed_home = time.perf_counter() - node.homing_start_time
-                s = float(np.clip(elapsed_home / node.homing_duration, 0.0, 1.0))
-                q_ref_interp = node.homing_start_q + s * (
-                    node.homing_target_q_full - node.homing_start_q
-                )
-
+                s, q_ref_interp = node.homing.q_ref()
                 tasks["q_homing"].setReference(q_ref_interp)
                 tasks["postural"].setReference(q_ref_interp)
 
@@ -616,32 +593,21 @@ def main(args=None):
                 model.setJointPosition(q)
                 model.update()
 
-                q_err = 0.0
-                for name, idx in q_index_map(model).items():
-                    if name in node.homing_target_q and idx < len(q):
-                        q_err += (q[idx] - node.homing_target_q[name]) ** 2
-                q_err = np.sqrt(q_err)
+                q_err = node.homing.rms_error(q, qidx)
 
-                converged = q_err < node.homing_tol
-                time_limit_exceeded = elapsed_home > (node.homing_duration + node.homing_settle)
-
-                if s >= 1.0 and (converged or time_limit_exceeded):
-                    if converged:
+                if node.homing.should_finish(s, q_err):
+                    if q_err < node.homing.tol:
                         node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
                     else:
                         node.get_logger().warn(
                             f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})"
                         )
-
-                    node.homing_active = False
-                    node.is_currently_homing = False
+                    node.homing.finish()
 
                     # No handoff: every reference is already at the home config.
                     tasks["q_homing"].setWeight(0.0)
                     node.target_right = None
                     node.target_left = None
-
-                    node._post_home_check = time.perf_counter() + 1.5
                     node.home_done_pub.publish(Bool(data=True))
             else:
                 # ONLY evaluate cartesian goals when NOT homing
@@ -670,7 +636,7 @@ def main(args=None):
                         _hold_cartesian(task, model, frame, base)
 
             # Gaze weight / lambda (only when not homing). /opensot/gaze_lock toggles it.
-            if "gaze" in tasks and not node.homing_active:
+            if "gaze" in tasks and not node.homing.active:
                 gaze_dim = tasks["gaze"].getTaskSize()
                 if node.gaze_locked:
                     tasks["gaze"].setLambda(0.0)
@@ -702,18 +668,6 @@ def main(args=None):
                 node.get_logger().error(f"Solver fail: {e}", throttle_duration_sec=1.0)
 
             q = model.sum(q, dq)
-
-            # One-shot sanity check ~1.5 s after a home: did the arm hold?
-            if node._post_home_check and time.perf_counter() >= node._post_home_check:
-                node._post_home_check = 0.0
-                _e = 0.0
-                for _n, _i in qidx.items():
-                    if _n in node.homing_target_q and _i < len(q):
-                        _e += (q[_i] - node.homing_target_q[_n]) ** 2
-                node.get_logger().info(
-                    f"[post-home +1.5s] q_err={_e ** 0.5:.3f}  |dq|={np.linalg.norm(dq):.4f} "
-                    "(should match completion)"
-                )
 
             solver_halted = solver_fail_streak >= SOLVER_FAIL_LIMIT
             if solver_halted and solver_fail_streak == SOLVER_FAIL_LIMIT:
