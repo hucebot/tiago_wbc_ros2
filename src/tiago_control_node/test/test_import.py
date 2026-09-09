@@ -22,7 +22,6 @@ import pkgutil
 from pathlib import Path
 
 import pytest
-
 import tiago_control_node
 
 PKG = tiago_control_node.__name__
@@ -65,7 +64,7 @@ def test_intra_package_imports_resolve(modname):
         if node.module != PKG and not node.module.startswith(PKG + "."):
             continue
 
-        sub = node.module[len(PKG) + 1:] if node.module != PKG else None
+        sub = node.module[len(PKG) + 1 :] if node.module != PKG else None
         if sub is not None and sub not in MODULES:
             pytest.fail(f"{modname}: imports from missing submodule {node.module!r}")
 

@@ -27,6 +27,7 @@ services:
     container_name: opensot_deploy_instance
     command: ros2 launch tiago_control_node bringup.launch.py robot_model:=${ROBOT_MODEL:-pro}
     volumes:
-      - /tmp:/tmp
+      # X11 socket only -- not all of /tmp. If RViz/Ogre complains about a cache
+      # dir it just recreates one inside the container.
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro

@@ -6,6 +6,14 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx install ruff==0.2.2   # keep in sync with ruff.toml expectations
+      - run: ruff check .
+      - run: ruff format --check .
+
   build-and-test:
     runs-on: ubuntu-latest
     container:

@@ -1,4 +1,4 @@
-.PHONY: tiago tiago-pro dev deploy down xhost build-deploy push-deploy
+.PHONY: tiago tiago-pro dev shell deploy down xhost build-deploy push-deploy
 
 # Extract variables from .env file
 include .env
@@ -67,6 +67,15 @@ push-deploy:
 # ---------------------------------------------------------
 # UTILS
 # ---------------------------------------------------------
+
+# Extra shell in the running container. `docker exec` skips the image entrypoint
+# (so no CYCLONEDDS_URI, no sourced workspaces) -- re-run it here so the shell
+# has the exact same ROS env as the launched process.
+#   make shell                              -> deploy container
+#   make shell SHELL_CONTAINER=opensot_dev_instance
+SHELL_CONTAINER ?= opensot_deploy_instance
+shell:
+	docker exec -it $(SHELL_CONTAINER) /entrypoint.sh bash
 
 # Stops and removes the deploy container and its network
 down:

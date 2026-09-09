@@ -1,83 +1,83 @@
-import os
-import time
+import array
 import copy
 import json
-import array
+import os
+import time
+
 import numpy as np
+
+# OpenSoT
+import pyopensot as pysot
+
+# ROS 2 Interfaces
+import rclpy
+import tf2_geometry_msgs  # noqa: F401  (side-effect: registers geometry_msgs <-> tf2 conversions)
+from ament_index_python.packages import get_package_share_directory
+from control_msgs.msg import JointTrajectoryControllerState
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped, Twist
+from pyopensot.constraints.velocity import JointLimits, VelocityLimits
+from pyopensot.tasks.velocity import Cartesian, Gaze, Manipulability, Postural
+from pyopensot_collision.constraints.velocity import CollisionAvoidance
+from rclpy.node import Node
+from rclpy.qos import (
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 from scipy.spatial.transform import Rotation as R
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, String
+from std_srvs.srv import SetBool
+from tf2_ros import TransformBroadcaster
+from visualization_msgs.msg import Marker, MarkerArray
+from xbot2_interface import pyaffine3, pyxbot2_collision
+from xbot2_interface import pyxbot2_interface as xbi
+
 from tiago_control_node.utils import (
-    ObstacleData,
     EPS_REGULARISATION,
+    ObstacleData,
     load_home_poses,
     q_index_map,
     v_index_map,
 )
 
-# ROS 2 Interfaces
-import rclpy
-import tf2_geometry_msgs
-from rclpy.node import Node
-from std_msgs.msg import Bool, String
-from std_srvs.srv import SetBool
-from visualization_msgs.msg import Marker, MarkerArray
-from sensor_msgs.msg import JointState
-from tf2_ros import TransformBroadcaster
-from control_msgs.msg import JointTrajectoryControllerState
-from geometry_msgs.msg import PoseStamped, Twist, TransformStamped, Point
-from ament_index_python.packages import get_package_share_directory
-
-# OpenSoT
-import pyopensot as pysot
-from xbot2_interface import pyaffine3
-from xbot2_interface import pyxbot2_collision
-from xbot2_interface import pyxbot2_interface as xbi
-from pyopensot.constraints.velocity import JointLimits, VelocityLimits
-from pyopensot.tasks.velocity import Postural, Cartesian, Manipulability, Gaze
-from pyopensot_collision.constraints.velocity import CollisionAvoidance
-
-from rclpy.qos import (
-    QoSProfile,
-    QoSReliabilityPolicy,
-    QoSHistoryPolicy,
-)
-
 
 class TiagoOpenSoTNode(Node):
     def __init__(self):
-        super().__init__('tiago_opensot_control')
+        super().__init__("tiago_opensot_control")
 
         # --- Parameters ---
         param_defaults = [
-            ('control_dt', 0.01),
-            ('lambdas.gripper_right', 0.1),
-            ('lambdas.gripper_left', 0.1),
-            ('lambdas.postural', 0.08),
-            ('lambdas.base', 0.1),
-            ('frames.right_gripper', "gripper_right_grasping_link"),
-            ('frames.left_gripper', "gripper_left_grasping_link"),
-            ('frames.base_link', "base_link"),
-            ('frames.world', "world"),
-            ('base_frames.right_arm_task', "base_link"),
-            ('base_frames.left_arm_task', "base_link"),
-            ('base_frames.base_task', "world")
+            ("control_dt", 0.01),
+            ("lambdas.gripper_right", 0.1),
+            ("lambdas.gripper_left", 0.1),
+            ("lambdas.postural", 0.08),
+            ("lambdas.base", 0.1),
+            ("frames.right_gripper", "gripper_right_grasping_link"),
+            ("frames.left_gripper", "gripper_left_grasping_link"),
+            ("frames.base_link", "base_link"),
+            ("frames.world", "world"),
+            ("base_frames.right_arm_task", "base_link"),
+            ("base_frames.left_arm_task", "base_link"),
+            ("base_frames.base_task", "world"),
         ]
-        self.declare_parameters(namespace='', parameters=param_defaults)
+        self.declare_parameters(namespace="", parameters=param_defaults)
         self.get_logger().info("Parameters declared with defaults.")
 
-        self.dt = self.get_parameter('control_dt').value
-        self.l_right = self.get_parameter('lambdas.gripper_right').value
-        self.l_left = self.get_parameter('lambdas.gripper_left').value
-        self.l_postural = self.get_parameter('lambdas.postural').value
-        self.l_base = self.get_parameter('lambdas.base').value
+        self.dt = self.get_parameter("control_dt").value
+        self.l_right = self.get_parameter("lambdas.gripper_right").value
+        self.l_left = self.get_parameter("lambdas.gripper_left").value
+        self.l_postural = self.get_parameter("lambdas.postural").value
+        self.l_base = self.get_parameter("lambdas.base").value
 
         # --- Frames ---
-        self.frame_right = self.get_parameter('frames.right_gripper').value
-        self.frame_left = self.get_parameter('frames.left_gripper').value
-        self.frame_base = self.get_parameter('frames.base_link').value
-        self.frame_world = self.get_parameter('frames.world').value
-        self.base_right_arm = self.get_parameter('base_frames.right_arm_task').value
-        self.base_left_arm = self.get_parameter('base_frames.left_arm_task').value
-        self.base_robot = self.get_parameter('base_frames.base_task').value
+        self.frame_right = self.get_parameter("frames.right_gripper").value
+        self.frame_left = self.get_parameter("frames.left_gripper").value
+        self.frame_base = self.get_parameter("frames.base_link").value
+        self.frame_world = self.get_parameter("frames.world").value
+        self.base_right_arm = self.get_parameter("base_frames.right_arm_task").value
+        self.base_left_arm = self.get_parameter("base_frames.left_arm_task").value
+        self.base_robot = self.get_parameter("base_frames.base_task").value
 
         # --- State Variables ---
         self.target_right = None
@@ -93,39 +93,53 @@ class TiagoOpenSoTNode(Node):
         self.homing_active = False
         self.is_currently_homing = False
         self.homing_target_q = {}
-        self.homing_duration = 0.5 # Time to complete homing motion in seconds
-        self.homing_settle = 2.0   # Extra seconds allowed to converge after interpolation
-        self.homing_tol = 0.05     # rad RMS joint error that counts as "home"
+        self.homing_duration = 0.5  # Time to complete homing motion in seconds
+        self.homing_settle = 2.0  # Extra seconds allowed to converge after interpolation
+        self.homing_tol = 0.05  # rad RMS joint error that counts as "home"
         self.homing_start_time = 0.0
         self.homing_start_q = None
         self.homing_target_q_full = None
 
         # --- Subscribers ---
-        qos_state = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, history=QoSHistoryPolicy.KEEP_LAST, depth=1)
-        self.create_subscription(Bool, '/opensot/pause', self._pause_cb, 10)
-        self.create_subscription(PoseStamped, '/cartesian_interface/right/target_pose', self._right_target_cb, 10)
-        self.create_subscription(PoseStamped, '/cartesian_interface/left/target_pose', self._left_target_cb, 10)
-        self.create_subscription(Twist, '/cartesian_interface/base/target_twist', self._base_target_cb, 10)
-        self.create_subscription(Bool, '/streamdeck/reset_config', self._reset_cb, 10)
-        self.create_subscription(MarkerArray, '/opensot/external_collisions', self._collision_scene_cb, 10)
-        self.create_subscription(Bool, '/opensot/gaze_lock', self._gaze_lock_cb, qos_state)
-        self.create_subscription(String, '/opensot/home_cmd', self._home_cmd_cb, 10)
+        qos_state = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE, history=QoSHistoryPolicy.KEEP_LAST, depth=1
+        )
+        self.create_subscription(Bool, "/opensot/pause", self._pause_cb, 10)
+        self.create_subscription(
+            PoseStamped, "/cartesian_interface/right/target_pose", self._right_target_cb, 10
+        )
+        self.create_subscription(
+            PoseStamped, "/cartesian_interface/left/target_pose", self._left_target_cb, 10
+        )
+        self.create_subscription(
+            Twist, "/cartesian_interface/base/target_twist", self._base_target_cb, 10
+        )
+        self.create_subscription(Bool, "/streamdeck/reset_config", self._reset_cb, 10)
+        self.create_subscription(
+            MarkerArray, "/opensot/external_collisions", self._collision_scene_cb, 10
+        )
+        self.create_subscription(Bool, "/opensot/gaze_lock", self._gaze_lock_cb, qos_state)
+        self.create_subscription(String, "/opensot/home_cmd", self._home_cmd_cb, 10)
 
         # --- Publishers ---
-        self.joint_state_publisher = self.create_publisher(JointState, '/opensot/joint_states', 10)
-        self.base_vel_publisher = self.create_publisher(Twist, '/opensot/base_velocity_command', 10)
-        self.reset_ok_publisher = self.create_publisher(Bool, '/opensot/reset_complete', 1)
-        self.home_done_pub = self.create_publisher(Bool, '/opensot/home_done', 10)
-        self.collision_distances_publisher = self.create_publisher(Marker, '/opensot/viz/collision_distances', 10)
-        self.active_collisions_publisher = self.create_publisher(MarkerArray, '/opensot/viz/active_collisions', 10)
+        self.joint_state_publisher = self.create_publisher(JointState, "/opensot/joint_states", 10)
+        self.base_vel_publisher = self.create_publisher(Twist, "/opensot/base_velocity_command", 10)
+        self.reset_ok_publisher = self.create_publisher(Bool, "/opensot/reset_complete", 1)
+        self.home_done_pub = self.create_publisher(Bool, "/opensot/home_done", 10)
+        self.collision_distances_publisher = self.create_publisher(
+            Marker, "/opensot/viz/collision_distances", 10
+        )
+        self.active_collisions_publisher = self.create_publisher(
+            MarkerArray, "/opensot/viz/active_collisions", 10
+        )
         self.base_link_broadcaster = TransformBroadcaster(self)
 
         # --- Services ---
         self.enable_external_collision_service = self.create_service(
-            SetBool, 'enable_external_obstacle', self.handle_enable_external_collision
+            SetBool, "enable_external_obstacle", self.handle_enable_external_collision
         )
 
-        self.package_share_path = get_package_share_directory('tiago_dual_cartesio_config')
+        self.package_share_path = get_package_share_directory("tiago_dual_cartesio_config")
         self.urdf = self._load_urdf()
         self.home_configs = load_home_poses("pro")
         self.get_logger().info("Tiago OpenSoT Control Node initialized successfully.")
@@ -142,27 +156,41 @@ class TiagoOpenSoTNode(Node):
     def _build_home_q(self, config_dict):
         jnt_map = {}
         if "arm_left" in config_dict:
-            for i, val in enumerate(config_dict["arm_left"]): jnt_map[f"arm_left_{i+1}_joint"] = val
+            for i, val in enumerate(config_dict["arm_left"]):
+                jnt_map[f"arm_left_{i+1}_joint"] = val
         if "arm_right" in config_dict:
-            for i, val in enumerate(config_dict["arm_right"]): jnt_map[f"arm_right_{i+1}_joint"] = val
+            for i, val in enumerate(config_dict["arm_right"]):
+                jnt_map[f"arm_right_{i+1}_joint"] = val
         if "torso" in config_dict:
             jnt_map["torso_lift_joint"] = config_dict["torso"][0]
         if "head" in config_dict:
-            for i, val in enumerate(config_dict["head"]): jnt_map[f"head_{i+1}_joint"] = val
+            for i, val in enumerate(config_dict["head"]):
+                jnt_map[f"head_{i+1}_joint"] = val
         return jnt_map
 
-    def _gaze_lock_cb(self, msg: Bool): self.gaze_locked = msg.data
-    def _pause_cb(self, msg: Bool): self.is_paused = msg.data
-    def _right_target_cb(self, msg: PoseStamped): self.target_right = msg
-    def _left_target_cb(self, msg: PoseStamped): self.target_left = msg
-    def _base_target_cb(self, msg: Twist): self.target_base_twist = msg
+    def _gaze_lock_cb(self, msg: Bool):
+        self.gaze_locked = msg.data
+
+    def _pause_cb(self, msg: Bool):
+        self.is_paused = msg.data
+
+    def _right_target_cb(self, msg: PoseStamped):
+        self.target_right = msg
+
+    def _left_target_cb(self, msg: PoseStamped):
+        self.target_left = msg
+
+    def _base_target_cb(self, msg: Twist):
+        self.target_base_twist = msg
+
     def _reset_cb(self, msg: Bool):
         if msg.data:
             self.needs_reset = True
             self.reset_poses()
 
     def _collision_scene_cb(self, msg: MarkerArray):
-        if not hasattr(self, 'active_collisions'): self.active_collisions = {}
+        if not hasattr(self, "active_collisions"):
+            self.active_collisions = {}
         for marker in msg.markers:
             obj_id = f"ext_{marker.ns}_{marker.id}"
             if marker.action in [Marker.DELETE, Marker.DELETEALL]:
@@ -171,7 +199,9 @@ class TiagoOpenSoTNode(Node):
             elif marker.action in [Marker.ADD, Marker.MODIFY]:
                 self.active_collisions[obj_id] = ObstacleData(marker=marker, status="PENDING_ADD")
 
-    def handle_enable_external_collision(self, request: SetBool.Request, response: SetBool.Response):
+    def handle_enable_external_collision(
+        self, request: SetBool.Request, response: SetBool.Response
+    ):
         self.enable_external_obstacle = request.data
         response.success = True
         return response
@@ -200,8 +230,8 @@ class TiagoOpenSoTNode(Node):
             ci = qidx[name]
             joint_state_msg.position[out_i] = float(np.arctan2(q[ci + 1], q[ci]))
 
-        joint_state_msg.position[len(wheel_names):] = array.array('d', q[tail_start:])
-        joint_state_msg.velocity = array.array('d', [0.0] * len(joint_state_msg.position))
+        joint_state_msg.position[len(wheel_names) :] = array.array("d", q[tail_start:])
+        joint_state_msg.velocity = array.array("d", [0.0] * len(joint_state_msg.position))
 
         # Torso gets a velocity feed-forward (it is slow and benefits from it).
         if "torso_lift_joint" in vidx:
@@ -212,7 +242,7 @@ class TiagoOpenSoTNode(Node):
     def publish_active_obstacles(self, current_time):
         msg = MarkerArray()
         if self.enable_external_obstacle:
-            for obj_id, obs in self.active_collisions.items():
+            for obs in self.active_collisions.values():
                 if obs.status == "ACTIVE":
                     m = copy.deepcopy(obs.marker)
                     m.header.stamp = current_time
@@ -226,9 +256,11 @@ class TiagoOpenSoTNode(Node):
             self.active_collisions_publisher.publish(msg)
 
     def _load_urdf(self) -> str:
-        urdf_path = os.path.join(self.package_share_path, "capsules", "urdf", "tiago_pro_capsules.urdf")
+        urdf_path = os.path.join(
+            self.package_share_path, "capsules", "urdf", "tiago_pro_capsules.urdf"
+        )
         try:
-            with open(urdf_path, 'r') as f:
+            with open(urdf_path) as f:
                 return f.read()
         except OSError as e:
             raise RuntimeError(f"Could not load Pro capsule URDF at {urdf_path}: {e}") from e
@@ -239,7 +271,7 @@ class TiagoOpenSoTNode(Node):
         q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
         home_map = self._build_home_q(self.home_configs["home"])
-        ros_map = dict(zip(msg.name, msg.position)) if msg else {}
+        ros_map = dict(zip(msg.name, msg.position, strict=False)) if msg else {}
 
         for name, idx in q_index_map(model).items():
             if "wheel" in name or idx >= len(q):
@@ -253,17 +285,32 @@ class TiagoOpenSoTNode(Node):
     def wait_for_initial_state(self, timeout=4.0):
         self.get_logger().info(f"Waiting for initial hardware state (timeout: {timeout}s)...")
         base_state = None
-        def base_cb(msg): nonlocal base_state; base_state = msg
-        sub_base = self.create_subscription(JointState, '/joint_states', base_cb, 1)
 
-        target_controllers = ['arm_left_controller', 'arm_right_controller', 'head_controller', 'torso_controller']
+        def base_cb(msg):
+            nonlocal base_state
+            base_state = msg
+
+        sub_base = self.create_subscription(JointState, "/joint_states", base_cb, 1)
+
+        target_controllers = [
+            "arm_left_controller",
+            "arm_right_controller",
+            "head_controller",
+            "torso_controller",
+        ]
         collected_refs = {}
 
         subs = []
-        def make_cb(name): return lambda msg: collected_refs.update({name: msg})
+
+        def make_cb(name):
+            return lambda msg: collected_refs.update({name: msg})
+
         for ctrl in target_controllers:
-            subs.append(self.create_subscription(
-                JointTrajectoryControllerState, f'/{ctrl}/controller_state', make_cb(ctrl), 1))
+            subs.append(
+                self.create_subscription(
+                    JointTrajectoryControllerState, f"/{ctrl}/controller_state", make_cb(ctrl), 1
+                )
+            )
 
         start_time = time.time()
         success = False
@@ -273,13 +320,17 @@ class TiagoOpenSoTNode(Node):
                 success = True
                 break
             if time.time() - start_time > timeout:
-                self.get_logger().warn("Hardware synchronization timeout! Falling back to home_config.")
+                self.get_logger().warn(
+                    "Hardware synchronization timeout! Falling back to home_config."
+                )
                 break
             rclpy.spin_once(self, timeout_sec=0.1)
 
         self.destroy_subscription(sub_base)
-        for s in subs: self.destroy_subscription(s)
-        if not success: return None
+        for s in subs:
+            self.destroy_subscription(s)
+        if not success:
+            return None
 
         final_msg = JointState()
         final_msg.header = base_state.header
@@ -288,7 +339,8 @@ class TiagoOpenSoTNode(Node):
         name_to_idx = {n: i for i, n in enumerate(final_msg.name)}
 
         for _, state_msg in collected_refs.items():
-            if not hasattr(state_msg, 'reference') or not state_msg.reference.positions: continue
+            if not hasattr(state_msg, "reference") or not state_msg.reference.positions:
+                continue
             for i, joint_name in enumerate(state_msg.joint_names):
                 if joint_name in name_to_idx:
                     final_msg.position[name_to_idx[joint_name]] = state_msg.reference.positions[i]
@@ -334,24 +386,48 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     base_con = Cartesian("Base_Con", model, node.frame_base, node.frame_world)
     base_con.setLambda(node.l_base)
 
-    collision_pairs_path = os.path.join(node.package_share_path, "capsules", "urdf", "tiago_pro_capsules_collision_pairs.json")
+    collision_pairs_path = os.path.join(
+        node.package_share_path, "capsules", "urdf", "tiago_pro_capsules_collision_pairs.json"
+    )
     collision_avoidance = CollisionAvoidance(model, max_pairs=1000, collision_urdf=node.urdf)
-    with open(collision_pairs_path, 'r') as f:
+    with open(collision_pairs_path) as f:
         pro_collision_json = json.load(f)
 
-    pro_collision_list = [(linkA, linkB) for pair in pro_collision_json["collision_list"] for linkA, linkB in [sorted(pair)]]
+    pro_collision_list = [
+        (linkA, linkB)
+        for pair in pro_collision_json["collision_list"]
+        for linkA, linkB in [sorted(pair)]
+    ]
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
-    stack = ((g_left + g_right + base % [0, 1, 5]  + q_homing + gaze ) /
-             (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)) \
-             << qlims << dqlims << collision_avoidance << base_con % [2, 3, 4]
+    stack = (
+        (
+            (g_left + g_right + base % [0, 1, 5] + q_homing + gaze)
+            / (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)
+        )
+        << qlims
+        << dqlims
+        << collision_avoidance
+        << base_con % [2, 3, 4]
+    )
 
     tasks = {
-        "left": g_left, "right": g_right, "postural": postural,
-        "base": base, "manip_left": manip_left, "manip_right": manip_right,
-        "gaze": gaze, "q_homing": q_homing
+        "left": g_left,
+        "right": g_right,
+        "postural": postural,
+        "base": base,
+        "manip_left": manip_left,
+        "manip_right": manip_right,
+        "gaze": gaze,
+        "q_homing": q_homing,
     }
-    return pysot.iHQP(stack, eps_regularisation=EPS_REGULARISATION), stack, tasks, collision_avoidance
+    return (
+        pysot.iHQP(stack, eps_regularisation=EPS_REGULARISATION),
+        stack,
+        tasks,
+        collision_avoidance,
+    )
+
 
 def sync_external_collisions(node: TiagoOpenSoTNode, collision_avoidance: CollisionAvoidance):
     for obj_id, obs in list(node.active_collisions.items()):
@@ -380,13 +456,23 @@ def sync_external_collisions(node: TiagoOpenSoTNode, collision_avoidance: Collis
 
             if shape:
                 w_T_c = pyaffine3.Affine3()
-                w_T_c.translation = np.array([m.pose.position.x, m.pose.position.y, m.pose.position.z])
-                w_T_c.linear = R.from_quat([m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w]).as_matrix()
+                w_T_c.translation = np.array(
+                    [m.pose.position.x, m.pose.position.y, m.pose.position.z]
+                )
+                w_T_c.linear = R.from_quat(
+                    [
+                        m.pose.orientation.x,
+                        m.pose.orientation.y,
+                        m.pose.orientation.z,
+                        m.pose.orientation.w,
+                    ]
+                ).as_matrix()
                 collision_avoidance.addCollisionShape(obj_id, "world", shape, w_T_c, [])
                 obs.status = "ACTIVE"
 
         if obs.status == "ACTIVE":
             collision_avoidance.setCollisionShapeActive(obj_id, node.enable_external_obstacle)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -428,7 +514,8 @@ def main(args=None):
                 model.setJointPosition(q)
                 model.update()
                 for t in tasks.values():
-                    if hasattr(t, 'reset'): t.reset()
+                    if hasattr(t, "reset"):
+                        t.reset()
                 node.reset_ok_publisher.publish(Bool(data=True))
 
             model.setJointPosition(q)
@@ -464,13 +551,13 @@ def main(args=None):
                     tasks["q_homing"].setLambda(0.1)
 
                 # --- Interpolate trajectory ---
-                t = time.perf_counter() - node.homing_start_time
-                s = np.clip(t / node.homing_duration, 0.0, 1.0)
+                elapsed_home = time.perf_counter() - node.homing_start_time
+                s = np.clip(elapsed_home / node.homing_duration, 0.0, 1.0)
 
-                # Linear: Moves at a constant speed from start to finish
-                alpha = s
-
-                q_ref_interp = node.homing_start_q + alpha * (node.homing_target_q_full - node.homing_start_q)
+                # Linear: constant speed from start to finish
+                q_ref_interp = node.homing_start_q + s * (
+                    node.homing_target_q_full - node.homing_start_q
+                )
                 tasks["q_homing"].setReference(q_ref_interp)
 
                 # Track homing tolerance progress
@@ -484,13 +571,15 @@ def main(args=None):
                 # settle timeout). Previously this only checked the timeout, so homing never
                 # completed early and always logged "timed out".
                 converged = q_err < node.homing_tol
-                time_limit_exceeded = t > (node.homing_duration + node.homing_settle)
+                time_limit_exceeded = elapsed_home > (node.homing_duration + node.homing_settle)
 
                 if s >= 1.0 and (converged or time_limit_exceeded):
                     if converged:
                         node.get_logger().info(f"Homing complete! (Final error: {q_err:.3f})")
                     else:
-                        node.get_logger().warn(f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})")
+                        node.get_logger().warn(
+                            f"Homing timed out! Forcing completion. (Final error: {q_err:.3f})"
+                        )
 
                     node.homing_active = False
                     node.is_currently_homing = False
@@ -513,14 +602,25 @@ def main(args=None):
                     node.home_done_pub.publish(Bool(data=True))
             else:
                 # ONLY evaluate cartesian goals when NOT homing
-                for target_msg, task in [(node.target_right, tasks['right']), (node.target_left, tasks['left'])]:
+                for target_msg, task in [
+                    (node.target_right, tasks["right"]),
+                    (node.target_left, tasks["left"]),
+                ]:
                     if target_msg is not None:
                         p_ref = task.getReference()[0]
-                        p_ref.translation = [target_msg.pose.position.x, target_msg.pose.position.y, target_msg.pose.position.z]
-                        p_ref.linear = R.from_quat([
-                            target_msg.pose.orientation.x, target_msg.pose.orientation.y,
-                            target_msg.pose.orientation.z, target_msg.pose.orientation.w
-                        ]).as_matrix()
+                        p_ref.translation = [
+                            target_msg.pose.position.x,
+                            target_msg.pose.position.y,
+                            target_msg.pose.position.z,
+                        ]
+                        p_ref.linear = R.from_quat(
+                            [
+                                target_msg.pose.orientation.x,
+                                target_msg.pose.orientation.y,
+                                target_msg.pose.orientation.z,
+                                target_msg.pose.orientation.w,
+                            ]
+                        ).as_matrix()
                         task.setReference(p_ref, np.zeros(6))
                     else:
                         task.reset()
@@ -542,10 +642,11 @@ def main(args=None):
 
             # Base Commands
             v = node.target_base_twist
-            tasks['base'].setVelocityLocalReference(np.array([
-                v.linear.x * node.dt, v.linear.y * node.dt,
-                0, 0, 0, v.angular.z * node.dt
-            ]).reshape(6, 1))
+            tasks["base"].setVelocityLocalReference(
+                np.array(
+                    [v.linear.x * node.dt, v.linear.y * node.dt, 0, 0, 0, v.angular.z * node.dt]
+                ).reshape(6, 1)
+            )
 
             # Execution
             sync_external_collisions(node, collision_avoidance)
@@ -575,8 +676,17 @@ def main(args=None):
 
             ts = node.get_clock().now().to_msg()
             w_T_b_tf.header.stamp = ts
-            w_T_b_tf.transform.translation.x, w_T_b_tf.transform.translation.y, w_T_b_tf.transform.translation.z = q[0:3]
-            w_T_b_tf.transform.rotation.x, w_T_b_tf.transform.rotation.y, w_T_b_tf.transform.rotation.z, w_T_b_tf.transform.rotation.w = q[3:7]
+            (
+                w_T_b_tf.transform.translation.x,
+                w_T_b_tf.transform.translation.y,
+                w_T_b_tf.transform.translation.z,
+            ) = q[0:3]
+            (
+                w_T_b_tf.transform.rotation.x,
+                w_T_b_tf.transform.rotation.y,
+                w_T_b_tf.transform.rotation.z,
+                w_T_b_tf.transform.rotation.w,
+            ) = q[3:7]
             node.base_link_broadcaster.sendTransform(w_T_b_tf)
 
             rclpy.spin_once(node, timeout_sec=0)
@@ -593,6 +703,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()

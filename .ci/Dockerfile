@@ -20,6 +20,12 @@ RUN source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
 ENV XDG_RUNTIME_DIR=/tmp/runtime-root
 RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 
+# Bake the RMW / domain so `docker exec` shells (which skip the entrypoint and
+# compose env) still talk to the right middleware. compose/-e still override.
+# CYCLONEDDS_URI stays entrypoint-only (it depends on DDS_ENV) -- use `make shell`.
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ENV ROS_DOMAIN_ID=2
+
 RUN echo 'source /home/.base/bin/activate' >> ~/.bashrc && \
     echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && \
     echo 'source /home/forest_ws/install/setup.bash' >> ~/.bashrc && \

@@ -1,34 +1,36 @@
 #!/usr/bin/env python3
+from typing import Any
+
 import numpy as np
-from typing import Dict, Optional, Any
-from scipy.spatial.transform import Rotation as R
 
 # ROS 2 Imports
 import rclpy
-import tf2_geometry_msgs
-from rclpy.node import Node
-from sensor_msgs.msg import Joy
-from std_msgs.msg import Bool, String
-from tf2_ros import Buffer, TransformListener, TransformException
-from geometry_msgs.msg import PoseStamped, PointStamped, Twist, Vector3, Pose
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-
-from tiago_control_node.utils import load_home_poses
+import tf2_geometry_msgs  # noqa: F401  (side-effect: registers geometry_msgs <-> tf2 conversions)
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import PointStamped, Pose, PoseStamped, Twist, Vector3
+from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 
 # Interactive markers (Control through RViz)
 from interactive_markers.menu_handler import MenuHandler
-from visualization_msgs.msg import (
-    InteractiveMarkerControl,
-    InteractiveMarker,
-    Marker,
-    InteractiveMarkerFeedback,
-)
-from interactive_markers.interactive_marker_server import InteractiveMarkerServer
-from builtin_interfaces.msg import Duration
+from rclpy.node import Node
+from scipy.spatial.transform import Rotation as R
+from sensor_msgs.msg import Joy
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+from tf2_ros import Buffer, TransformException, TransformListener
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from visualization_msgs.msg import (
+    InteractiveMarker,
+    InteractiveMarkerControl,
+    InteractiveMarkerFeedback,
+    Marker,
+)
+
+from tiago_control_node.utils import load_home_poses
 
 try:
-    from urdf_parser_py.urdf import URDF, Mesh, Box, Cylinder, Sphere
+    from urdf_parser_py.urdf import URDF, Box, Cylinder, Mesh, Sphere
+
     HAS_URDF_PARSER = True
 except ImportError:
     print("WARNING: urdf_parser_py not found. Meshes will not be loaded.")
@@ -113,23 +115,75 @@ class CartesianInterface(Node):
 
         self.create_subscription(Bool, "/opensot/home_done", self._home_done_cb, 10)
         for side in ["right", "left"]:
-            self.create_subscription(PoseStamped, f"/vive/{side}/output_pose", lambda m, s=side: self._pose_cb("vive", s, m), 1)
-            self.create_subscription(PoseStamped, f"/motion_recorder/pose_{side}", lambda m, s=side: self._pose_cb("replay", s, m), 1)
-            self.create_subscription(PointStamped, f"/vive/{side}/gripper", lambda m, s=side: self._gripper_cb(m, s), 10)
-            self.create_subscription(PointStamped, f"/replay/{side}/gripper", lambda m, s=side: self._gripper_cb(m, s), 10)
+            self.create_subscription(
+                PoseStamped,
+                f"/vive/{side}/output_pose",
+                lambda m, s=side: self._pose_cb("vive", s, m),
+                1,
+            )
+            self.create_subscription(
+                PoseStamped,
+                f"/motion_recorder/pose_{side}",
+                lambda m, s=side: self._pose_cb("replay", s, m),
+                1,
+            )
+            self.create_subscription(
+                PointStamped, f"/vive/{side}/gripper", lambda m, s=side: self._gripper_cb(m, s), 10
+            )
+            self.create_subscription(
+                PointStamped,
+                f"/replay/{side}/gripper",
+                lambda m, s=side: self._gripper_cb(m, s),
+                10,
+            )
 
-        self.create_subscription(PointStamped, "/vive/right/trackpad_x", lambda m: self._vive_trackpad_cb("vive", "right", "y", m), 10)
-        self.create_subscription(PointStamped, "/vive/right/trackpad_y", lambda m: self._vive_trackpad_cb("vive", "right", "x", m), 10)
-        self.create_subscription(PointStamped, "/vive/left/trackpad_x", lambda m: self._vive_trackpad_cb("vive", "left", "x", m), 10)
-        self.create_subscription(PointStamped, "/vive/right/trackpad_pressed", lambda m: self._vive_trackpad_pressed_cb("right", m), 10)
-        self.create_subscription(PointStamped, "/vive/left/trackpad_pressed", lambda m: self._vive_trackpad_pressed_cb("left", m), 10)
+        self.create_subscription(
+            PointStamped,
+            "/vive/right/trackpad_x",
+            lambda m: self._vive_trackpad_cb("vive", "right", "y", m),
+            10,
+        )
+        self.create_subscription(
+            PointStamped,
+            "/vive/right/trackpad_y",
+            lambda m: self._vive_trackpad_cb("vive", "right", "x", m),
+            10,
+        )
+        self.create_subscription(
+            PointStamped,
+            "/vive/left/trackpad_x",
+            lambda m: self._vive_trackpad_cb("vive", "left", "x", m),
+            10,
+        )
+        self.create_subscription(
+            PointStamped,
+            "/vive/right/trackpad_pressed",
+            lambda m: self._vive_trackpad_pressed_cb("right", m),
+            10,
+        )
+        self.create_subscription(
+            PointStamped,
+            "/vive/left/trackpad_pressed",
+            lambda m: self._vive_trackpad_pressed_cb("left", m),
+            10,
+        )
 
         # --- PUBLISHERS ---
-        self.pub_gripper_left = self.create_publisher(JointTrajectory, "/gripper_left_controller/joint_trajectory", 10)
-        self.pub_gripper_right = self.create_publisher(JointTrajectory, "/gripper_right_controller/joint_trajectory", 10)
-        self.pub_target_r = self.create_publisher(PoseStamped, "/cartesian_interface/right/target_pose", 1)
-        self.pub_target_l = self.create_publisher(PoseStamped, "/cartesian_interface/left/target_pose", 1)
-        self.pub_target_b = self.create_publisher(Twist, "/cartesian_interface/base/target_twist", 10)
+        self.pub_gripper_left = self.create_publisher(
+            JointTrajectory, "/gripper_left_controller/joint_trajectory", 10
+        )
+        self.pub_gripper_right = self.create_publisher(
+            JointTrajectory, "/gripper_right_controller/joint_trajectory", 10
+        )
+        self.pub_target_r = self.create_publisher(
+            PoseStamped, "/cartesian_interface/right/target_pose", 1
+        )
+        self.pub_target_l = self.create_publisher(
+            PoseStamped, "/cartesian_interface/left/target_pose", 1
+        )
+        self.pub_target_b = self.create_publisher(
+            Twist, "/cartesian_interface/base/target_twist", 10
+        )
         self.pub_pause_opensot = self.create_publisher(Bool, "/opensot/pause", 10)
         self.pub_home_cmd = self.create_publisher(String, "/opensot/home_cmd", 10)
 
@@ -163,10 +217,11 @@ class CartesianInterface(Node):
         self.create_timer(0.01, self._output_loop)
         self.get_logger().info("Cartesian Interface Node Initialized (Native Homing Forwarder)")
 
-
     def _home_done_cb(self, msg: Bool) -> None:
         if msg.data:
-            self.get_logger().info("Homing finished! Snapping markers to new home pose and disabling tasks.")
+            self.get_logger().info(
+                "Homing finished! Snapping markers to new home pose and disabling tasks."
+            )
             # 1. Stop publishing commands
             self.task_enabled = {"right": False, "left": False}
             self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
@@ -282,7 +337,9 @@ class CartesianInterface(Node):
         desired_state = "CLOSED" if msg.point.x > 0.5 else "OPEN"
         if self.gripper_state[side] != desired_state:
             self.gripper_state[side] = desired_state
-            target_pos = self.gripper_closed_pos if desired_state == "CLOSED" else self.gripper_open_pos
+            target_pos = (
+                self.gripper_closed_pos if desired_state == "CLOSED" else self.gripper_open_pos
+            )
             self._send_gripper(side, target_pos)
         self.gripper_btn_prev[side] = msg.point.x
 
@@ -290,7 +347,10 @@ class CartesianInterface(Node):
         pub = self.pub_gripper_left if side == "left" else self.pub_gripper_right
         traj = JointTrajectory()
         if self.model_type == "dual":
-            traj.joint_names = [f"gripper_{side}_left_finger_joint", f"gripper_{side}_right_finger_joint"]
+            traj.joint_names = [
+                f"gripper_{side}_left_finger_joint",
+                f"gripper_{side}_right_finger_joint",
+            ]
             p = JointTrajectoryPoint()
             p.positions = [pos, pos]
             p.time_from_start = Duration(sec=0, nanosec=int(2e8))
@@ -342,7 +402,8 @@ class CartesianInterface(Node):
         marker.type = Marker.CUBE
         marker.scale = Vector3(x=0.05, y=0.05, z=0.05)
         marker.color.r, marker.color.g, marker.color.b, marker.color.a = (0.0, 1.0, 0.0, 1.0)
-        if not HAS_URDF_PARSER or self.robot_urdf is None: return marker
+        if not HAS_URDF_PARSER or self.robot_urdf is None:
+            return marker
 
         current_link = task_link_name
         visual_element = None
@@ -358,7 +419,8 @@ class CartesianInterface(Node):
                 break
             steps += 1
 
-        if not visual_element: return marker
+        if not visual_element:
+            return marker
         geom = visual_element.geometry
         if isinstance(geom, Mesh):
             marker.type = Marker.MESH_RESOURCE
@@ -381,12 +443,24 @@ class CartesianInterface(Node):
 
         try:
             t_offset = self.tf_buffer.lookup_transform(
-                self._osot(task_link_name), self._osot(current_link), rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)
+                self._osot(task_link_name),
+                self._osot(current_link),
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0),
             )
             T_task_to_link = np.eye(4)
-            rot = [t_offset.transform.rotation.x, t_offset.transform.rotation.y, t_offset.transform.rotation.z, t_offset.transform.rotation.w]
+            rot = [
+                t_offset.transform.rotation.x,
+                t_offset.transform.rotation.y,
+                t_offset.transform.rotation.z,
+                t_offset.transform.rotation.w,
+            ]
             T_task_to_link[0:3, 0:3] = R.from_quat(rot).as_matrix()
-            T_task_to_link[0:3, 3] = [t_offset.transform.translation.x, t_offset.transform.translation.y, t_offset.transform.translation.z]
+            T_task_to_link[0:3, 3] = [
+                t_offset.transform.translation.x,
+                t_offset.transform.translation.y,
+                t_offset.transform.translation.z,
+            ]
         except TransformException:
             return marker
 
@@ -418,7 +492,9 @@ class CartesianInterface(Node):
         m.pose = self._get_fk_pose(side)
         self.marker_poses[side] = m.pose
 
-        c = InteractiveMarkerControl(always_visible=True, interaction_mode=InteractiveMarkerControl.MENU)
+        c = InteractiveMarkerControl(
+            always_visible=True, interaction_mode=InteractiveMarkerControl.MENU
+        )
         c.name = "menu_control"
         mesh_marker = self._get_visual_marker(self.frames[side])
         c.markers.append(mesh_marker)
@@ -430,7 +506,9 @@ class CartesianInterface(Node):
                 mc.orientation.w = 1.0
                 setattr(mc.orientation, ax, 1.0)
                 mc.interaction_mode = mode
-                mc.name = f"rotate_{ax}" if mode == InteractiveMarkerControl.ROTATE_AXIS else f"move_{ax}"
+                mc.name = (
+                    f"rotate_{ax}" if mode == InteractiveMarkerControl.ROTATE_AXIS else f"move_{ax}"
+                )
                 m.controls.append(mc)
 
         self.server.insert(marker=m, feedback_callback=self._marker_fb)
@@ -463,10 +541,12 @@ class CartesianInterface(Node):
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
 
-    def _tf_replay(self, msg: PoseStamped, target_frame: str) -> Optional[PoseStamped]:
-        if msg is None: return None
+    def _tf_replay(self, msg: PoseStamped, target_frame: str) -> PoseStamped | None:
+        if msg is None:
+            return None
         target_tf_frame = self._osot(target_frame)
-        if self._osot(msg.header.frame_id) == target_tf_frame: return msg
+        if self._osot(msg.header.frame_id) == target_tf_frame:
+            return msg
         try:
             pose_to_transform = PoseStamped()
             pose_to_transform.header.frame_id = msg.header.frame_id
@@ -485,16 +565,19 @@ class CartesianInterface(Node):
 
     def _apply_smoothing(self, target: Twist, current: Twist, alpha: float) -> Twist:
         smoothed = Twist()
+
         def smooth_val(curr_v, tar_v):
             val = curr_v + alpha * (tar_v - curr_v)
             return 0.0 if abs(val) < 0.001 and abs(tar_v) < 0.001 else val
+
         smoothed.linear.x = smooth_val(current.linear.x, target.linear.x)
         smoothed.linear.y = smooth_val(current.linear.y, target.linear.y)
         smoothed.angular.z = smooth_val(current.angular.z, target.angular.z)
         return smoothed
 
     def _process_arm_commands(self, side: str, pub: Any) -> None:
-        if self.teleop_mode == "rviz" and not self.task_enabled[side]: return
+        if self.teleop_mode == "rviz" and not self.task_enabled[side]:
+            return
         target_msg = None
 
         if self.teleop_mode == "rviz":
@@ -509,7 +592,8 @@ class CartesianInterface(Node):
             now = self.get_clock().now()
             msg_time = rclpy.time.Time.from_msg(target_msg.header.stamp)
             age = (now - msg_time).nanoseconds / 1e9
-            if age > 0.5: return
+            if age > 0.5:
+                return
             target_pose = target_msg.pose
         elif self.teleop_mode != "rviz":
             return
@@ -537,13 +621,17 @@ class CartesianInterface(Node):
     def _process_base_commands(self) -> None:
         raw_target_b = Twist()
         if self.base_teleop_mode == "joystick":
-            raw_target_b = self._scale_twist(self.joy_twist, self.joy_scale_linear, self.joy_scale_angular)
+            raw_target_b = self._scale_twist(
+                self.joy_twist, self.joy_scale_linear, self.joy_scale_angular
+            )
         elif self.base_teleop_mode == "navigation":
             raw_target_b = self.nav_twist
         elif self.base_teleop_mode == "vive":
             raw_target_b = self._scale_twist(self.vive_twist)
 
-        self.smoothed_twist = self._apply_smoothing(raw_target_b, self.smoothed_twist, self.twist_alpha)
+        self.smoothed_twist = self._apply_smoothing(
+            raw_target_b, self.smoothed_twist, self.twist_alpha
+        )
         self.pub_target_b.publish(self.smoothed_twist)
 
     def _output_loop(self) -> None:
@@ -551,12 +639,14 @@ class CartesianInterface(Node):
         for side, pub in [("right", self.pub_target_r), ("left", self.pub_target_l)]:
             self._process_arm_commands(side, pub)
 
+
 def main():
     rclpy.init()
     node = CartesianInterface()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()

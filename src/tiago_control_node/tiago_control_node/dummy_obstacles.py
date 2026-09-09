@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import rclpy
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point
+
 
 class DummyObstacles(Node):
     def __init__(self):
-        super().__init__('dummy_obstacle_publisher')
-        self.pub = self.create_publisher(MarkerArray, '/opensot/external_collisions', 10)
+        super().__init__("dummy_obstacle_publisher")
+        self.pub = self.create_publisher(MarkerArray, "/opensot/external_collisions", 10)
         self.timer = self.create_timer(1.0, self.publish_obstacles)
         self.get_logger().info("Publishing dummy obstacles to /opensot/external_collisions...")
 
@@ -78,14 +79,23 @@ class DummyObstacles(Node):
 
         # A TRIANGLE_LIST needs 3 points per face. 4 faces = 12 points total.
         tet.points = [
-            p0, p2, p1,  # Base
-            p0, p1, p3,  # Side 1
-            p1, p2, p3,  # Side 2
-            p2, p0, p3   # Side 3
+            p0,
+            p2,
+            p1,  # Base
+            p0,
+            p1,
+            p3,  # Side 1
+            p1,
+            p2,
+            p3,  # Side 2
+            p2,
+            p0,
+            p3,  # Side 3
         ]
         msg.markers.append(tet)
 
         self.pub.publish(msg)
+
 
 def main():
     rclpy.init()
@@ -98,5 +108,6 @@ def main():
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

@@ -19,37 +19,36 @@ Differences from the Pro node that are intentional here:
     list) with a JSON override if the config package ships one.
 """
 
-import os
-import time
+import array
 import copy
 import json
-import array
+import os
+import time
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-from std_msgs.msg import Bool, String
-from std_srvs.srv import SetBool
-from sensor_msgs.msg import JointState
-from geometry_msgs.msg import Twist, PoseStamped, TransformStamped, Point
-from visualization_msgs.msg import Marker, MarkerArray
-from control_msgs.msg import JointTrajectoryControllerState
-from tf2_ros import TransformBroadcaster
-from ament_index_python.packages import get_package_share_directory
 
 # OpenSoT / xbot2
 import pyopensot as pysot
-from xbot2_interface import pyaffine3
-from xbot2_interface import pyxbot2_collision
-from xbot2_interface import pyxbot2_interface as xbi
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from control_msgs.msg import JointTrajectoryControllerState
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped, Twist
 from pyopensot.constraints.velocity import JointLimits, VelocityLimits
-from pyopensot.tasks.velocity import Postural, Cartesian, Manipulability
+from pyopensot.tasks.velocity import Cartesian, Manipulability, Postural
+from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from scipy.spatial.transform import Rotation as R
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, String
+from std_srvs.srv import SetBool
+from tf2_ros import TransformBroadcaster
+from visualization_msgs.msg import Marker, MarkerArray
+from xbot2_interface import pyaffine3, pyxbot2_collision
+from xbot2_interface import pyxbot2_interface as xbi
 
 try:
     from pyopensot.tasks.velocity import Gaze
+
     _HAS_GAZE = True
 except ImportError:  # older pyopensot builds
     _HAS_GAZE = False
@@ -57,13 +56,13 @@ except ImportError:  # older pyopensot builds
 from pyopensot_collision.constraints.velocity import CollisionAvoidance
 
 from tiago_control_node.utils import (
-    collision_list as DEFAULT_COLLISION_LIST,
-    ObstacleData,
     EPS_REGULARISATION,
+    ObstacleData,
     load_home_poses,
     q_index_map,
     v_index_map,
 )
+from tiago_control_node.utils import collision_list as DEFAULT_COLLISION_LIST
 
 # --- Robot-specific configuration -------------------------------------------------
 ROBOT = {
@@ -146,9 +145,9 @@ class TiagoOpenSoTNode(Node):
         self.homing_target_q_full = None
         self.homing_start_q = None
         self.homing_start_time = 0.0
-        self.homing_duration = 0.5   # seconds of interpolation
-        self.homing_settle = 2.0     # extra seconds allowed to converge
-        self.homing_tol = 0.05       # rad RMS error that counts as "home"
+        self.homing_duration = 0.5  # seconds of interpolation
+        self.homing_settle = 2.0  # extra seconds allowed to converge
+        self.homing_tol = 0.05  # rad RMS error that counts as "home"
 
         # --- Subscribers ---
         qos_state = QoSProfile(
@@ -157,11 +156,19 @@ class TiagoOpenSoTNode(Node):
             depth=1,
         )
         self.create_subscription(Bool, "/opensot/pause", self._pause_cb, 10)
-        self.create_subscription(PoseStamped, "/cartesian_interface/right/target_pose", self._right_target_cb, 10)
-        self.create_subscription(PoseStamped, "/cartesian_interface/left/target_pose", self._left_target_cb, 10)
-        self.create_subscription(Twist, "/cartesian_interface/base/target_twist", self._base_target_cb, 10)
+        self.create_subscription(
+            PoseStamped, "/cartesian_interface/right/target_pose", self._right_target_cb, 10
+        )
+        self.create_subscription(
+            PoseStamped, "/cartesian_interface/left/target_pose", self._left_target_cb, 10
+        )
+        self.create_subscription(
+            Twist, "/cartesian_interface/base/target_twist", self._base_target_cb, 10
+        )
         self.create_subscription(Bool, "/streamdeck/reset_config", self._reset_cb, 10)
-        self.create_subscription(MarkerArray, "/opensot/external_collisions", self._collision_scene_cb, 10)
+        self.create_subscription(
+            MarkerArray, "/opensot/external_collisions", self._collision_scene_cb, 10
+        )
         self.create_subscription(Bool, "/opensot/gaze_lock", self._gaze_lock_cb, qos_state)
         self.create_subscription(String, "/opensot/home_cmd", self._home_cmd_cb, 10)
 
@@ -170,8 +177,12 @@ class TiagoOpenSoTNode(Node):
         self.base_vel_publisher = self.create_publisher(Twist, "/opensot/base_velocity_command", 10)
         self.reset_ok_publisher = self.create_publisher(Bool, "/opensot/reset_complete", 1)
         self.home_done_pub = self.create_publisher(Bool, "/opensot/home_done", 10)
-        self.collision_distances_publisher = self.create_publisher(Marker, "/opensot/viz/collision_distances", 10)
-        self.active_collisions_publisher = self.create_publisher(MarkerArray, "/opensot/viz/active_collisions", 10)
+        self.collision_distances_publisher = self.create_publisher(
+            Marker, "/opensot/viz/collision_distances", 10
+        )
+        self.active_collisions_publisher = self.create_publisher(
+            MarkerArray, "/opensot/viz/active_collisions", 10
+        )
         self.base_link_broadcaster = TransformBroadcaster(self)
 
         # --- Services ---
@@ -191,7 +202,7 @@ class TiagoOpenSoTNode(Node):
     def _load_urdf(self) -> str:
         urdf_path = os.path.join(self.package_share_path, ROBOT["capsule_urdf"])
         try:
-            with open(urdf_path, "r") as f:
+            with open(urdf_path) as f:
                 return f.read()
         except OSError as e:
             raise RuntimeError(f"Could not load Dual capsule URDF at {urdf_path}: {e}") from e
@@ -200,7 +211,7 @@ class TiagoOpenSoTNode(Node):
         """Return the set of link pairs to check for self-collision."""
         json_path = os.path.join(self.package_share_path, ROBOT["collision_pairs_json"])
         try:
-            with open(json_path, "r") as f:
+            with open(json_path) as f:
                 raw = json.load(f)["collision_list"]
             self.get_logger().info(f"Loaded {len(raw)} collision pairs from {json_path}")
             return {tuple(sorted(pair)) for pair in raw}
@@ -229,7 +240,7 @@ class TiagoOpenSoTNode(Node):
         q[3:7] = [0.0, 0.0, 0.0, 1.0]  # identity quaternion for the floating base
 
         home_map = self._build_home_q(self.home_configs[ROBOT["default_home_key"]])
-        ros_map = dict(zip(msg.name, msg.position)) if msg else {}
+        ros_map = dict(zip(msg.name, msg.position, strict=False)) if msg else {}
 
         for name, i in q_index_map(model).items():
             if "wheel" in name:
@@ -281,7 +292,9 @@ class TiagoOpenSoTNode(Node):
             elif marker.action in (Marker.ADD, Marker.MODIFY):
                 self.active_collisions[obj_id] = ObstacleData(marker=marker, status="PENDING_ADD")
 
-    def handle_enable_external_collision(self, request: SetBool.Request, response: SetBool.Response):
+    def handle_enable_external_collision(
+        self, request: SetBool.Request, response: SetBool.Response
+    ):
         self.enable_external_obstacle = request.data
         response.success = True
         return response
@@ -333,7 +346,7 @@ class TiagoOpenSoTNode(Node):
             ci = qidx[name]
             joint_state_msg.position[out_i] = float(np.arctan2(q[ci + 1], q[ci]))
 
-        joint_state_msg.position[len(wheel_names):] = array.array("d", q[tail_start:])
+        joint_state_msg.position[len(wheel_names) :] = array.array("d", q[tail_start:])
         joint_state_msg.velocity = array.array("d", [0.0] * len(joint_state_msg.position))
 
         # Torso gets a velocity feed-forward (it is slow and benefits from it).
@@ -371,7 +384,9 @@ class TiagoOpenSoTNode(Node):
                 success = True
                 break
             if time.time() - start_time > timeout:
-                self.get_logger().warn("Hardware synchronization timeout! Falling back to home config.")
+                self.get_logger().warn(
+                    "Hardware synchronization timeout! Falling back to home config."
+                )
                 break
             rclpy.spin_once(self, timeout_sec=0.1)
 
@@ -640,7 +655,10 @@ def main(args=None):
                     node.home_done_pub.publish(Bool(data=True))
             else:
                 # Cartesian goals are only tracked when not homing.
-                for target_msg, task in ((node.target_right, tasks["right"]), (node.target_left, tasks["left"])):
+                for target_msg, task in (
+                    (node.target_right, tasks["right"]),
+                    (node.target_left, tasks["left"]),
+                ):
                     if target_msg is not None:
                         p_ref = task.getReference()[0]
                         p_ref.translation = [
@@ -673,7 +691,9 @@ def main(args=None):
             # Base velocity command.
             v = node.target_base_twist
             tasks["base"].setVelocityLocalReference(
-                np.array([v.linear.x * node.dt, v.linear.y * node.dt, 0, 0, 0, v.angular.z * node.dt]).reshape(6, 1)
+                np.array(
+                    [v.linear.x * node.dt, v.linear.y * node.dt, 0, 0, 0, v.angular.z * node.dt]
+                ).reshape(6, 1)
             )
 
             # Solve.

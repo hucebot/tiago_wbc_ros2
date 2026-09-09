@@ -24,7 +24,7 @@ def load_home_poses(robot_model: str) -> dict:
         get_package_share_directory("tiago_control_node"), "config", "home_poses.yaml"
     )
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             data = yaml.safe_load(f) or {}
     except OSError as e:
         raise RuntimeError(f"Could not read home poses at {path}: {e}") from e

@@ -74,6 +74,10 @@ the robot model; drag the two interactive markers to move the grippers.
 `make deploy` is the plain form — it obeys `ROBOT_MODEL` if you export it yourself
 (defaults to `pro`).
 
+Need a shell in the running container? `make shell` — it re-runs the entrypoint so
+you get the full ROS env (`docker exec … bash` alone skips it and misses
+`CYCLONEDDS_URI` / the sourced workspaces).
+
 Stop everything with `make down`.
 
 ---
