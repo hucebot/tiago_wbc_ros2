@@ -109,14 +109,18 @@ class CartesianInterface(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # --- SUBSCRIBERS ---
+        # "opensot/*" and "cartesian_interface/*" are RELATIVE -> they follow the
+        # launch `namespace` and pair with the solver. Foreign sources
+        # ("/streamdeck/*", "/joy", "/vive/*", "/motion_recorder/*", "/replay/*")
+        # and the ros2_control gripper topics stay ABSOLUTE.
         self.create_subscription(String, "/streamdeck/teleop_mode", self._mode_cb, 10)
         self.create_subscription(String, "/streamdeck/base_teleop_mode", self._base_mode_cb, 10)
         self.create_subscription(Bool, "/streamdeck/reset_config", self._reset_cb, 10)
         self.create_subscription(Joy, "/joy", self._joy_cb, 10)
-        # self.create_subscription(Bool, "/opensot/reset_complete", self._reset_complete_cb, 1)
+        # self.create_subscription(Bool, "opensot/reset_complete", self._reset_complete_cb, 1)
 
-        self.create_subscription(Bool, "/opensot/home_done", self._home_done_cb, 10)
-        self.create_subscription(String, "/opensot/home_cmd", self._home_cmd_cb, 10)
+        self.create_subscription(Bool, "opensot/home_done", self._home_done_cb, 10)
+        self.create_subscription(String, "opensot/home_cmd", self._home_cmd_cb, 10)
         for side in ["right", "left"]:
             self.create_subscription(
                 PoseStamped,
@@ -179,16 +183,16 @@ class CartesianInterface(Node):
             JointTrajectory, "/gripper_right_controller/joint_trajectory", 10
         )
         self.pub_target_r = self.create_publisher(
-            PoseStamped, "/cartesian_interface/right/target_pose", 1
+            PoseStamped, "cartesian_interface/right/target_pose", 1
         )
         self.pub_target_l = self.create_publisher(
-            PoseStamped, "/cartesian_interface/left/target_pose", 1
+            PoseStamped, "cartesian_interface/left/target_pose", 1
         )
         self.pub_target_b = self.create_publisher(
-            Twist, "/cartesian_interface/base/target_twist", 10
+            Twist, "cartesian_interface/base/target_twist", 10
         )
-        self.pub_pause_opensot = self.create_publisher(Bool, "/opensot/pause", 10)
-        self.pub_home_cmd = self.create_publisher(String, "/opensot/home_cmd", 10)
+        self.pub_pause_opensot = self.create_publisher(Bool, "opensot/pause", 10)
+        self.pub_home_cmd = self.create_publisher(String, "opensot/home_cmd", 10)
 
         self.srv_homes = {}
         for home_name in self.home_configs.keys():

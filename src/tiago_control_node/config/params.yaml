@@ -1,5 +1,6 @@
-# Parameters are matched by node name. These keys MUST match the `name=` given
-# to each node in bringup.launch.py:
+# Parameters are matched by node name. The `/**/` prefix is a namespace wildcard,
+# so these match whatever `namespace` bringup.launch.py pushes the app nodes into
+# (default: /tiago_pro or /tiago). Node names come from the `name=` in the launch:
 #   tiago_pro_opensot_control  -> node_solver_pro   (robot_model:=pro)
 #   tiago_opensot_control      -> node_solver_dual  (robot_model:=dual)
 #   cartesian_interface_node   -> node_cartesian_interface
@@ -7,7 +8,7 @@
 # Values here are seeded from the nodes' in-code defaults, so this file is the
 # live tuning surface without changing current behavior.
 
-tiago_pro_opensot_control:
+/**/tiago_pro_opensot_control:
   ros__parameters:
     control_dt: 0.01          # control period in seconds (100 Hz)
 
@@ -33,7 +34,7 @@ tiago_pro_opensot_control:
       left_arm_task: "base_link"
       base_task: "world"
 
-tiago_opensot_control:          # TIAGo Dual
+/**/tiago_opensot_control:      # TIAGo Dual
   ros__parameters:
     control_dt: 0.01
     enable_gaze: false
@@ -56,7 +57,7 @@ tiago_opensot_control:          # TIAGo Dual
       left_arm_task: "base_link"
       base_task: "world"
 
-cartesian_interface_node:
+/**/cartesian_interface_node:
   ros__parameters:
     joy:
       scale_linear: 0.3        # base teleop: m/s per unit joystick axis

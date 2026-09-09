@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument, GroupAction, TimerAction
 from launch.conditions import LaunchConfigurationEquals, LaunchConfigurationNotEquals
 from launch.substitutions import (
     Command,
@@ -7,7 +7,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
     PythonExpression,
 )
-from launch_ros.actions import Node
+from launch_ros.actions import Node, PushRosNamespace
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -22,6 +22,21 @@ def generate_launch_description():
     robot_model = LaunchConfiguration("robot_model")
     is_pro = LaunchConfigurationEquals("robot_model", "pro")
     is_dual = LaunchConfigurationNotEquals("robot_model", "pro")
+
+    # ROS namespace for the app nodes (both solvers + the cartesian interface).
+    # Defaults to 'tiago_pro' / 'tiago' from robot_model so two stacks can share a
+    # DDS graph without colliding. The robot_state_publishers, RViz, the static TF
+    # and the hardware-boundary topics (/opensot/joint_states,
+    # /opensot/base_velocity_command) stay GLOBAL -- they are the contract with the
+    # robot bridge and keep /tf a single tree.
+    namespace_arg = DeclareLaunchArgument(
+        "namespace",
+        default_value=PythonExpression(
+            ["'tiago_pro' if '", robot_model, "' == 'pro' else 'tiago'"]
+        ),
+        description="ROS namespace for the WBC app nodes (solver + cartesian interface)",
+    )
+    namespace = LaunchConfiguration("namespace")
 
     # Setup Paths
     control_pkg_share = FindPackageShare("tiago_control_node")
@@ -137,15 +152,26 @@ def generate_launch_description():
         parameters=[config_path, robot_description, {"robot_model": robot_model}],
     )
 
-    # Delayed Node Groups
+    # App nodes go under `namespace`; the RSPs / RViz / static TF above stay global.
     delayed_nodes = TimerAction(
-        period=2.0, actions=[node_solver_dual, node_solver_pro, node_cartesian_interface]
+        period=2.0,
+        actions=[
+            GroupAction(
+                [
+                    PushRosNamespace(namespace),
+                    node_solver_dual,
+                    node_solver_pro,
+                    node_cartesian_interface,
+                ]
+            )
+        ],
     )
 
     # Final Launch Description
     return LaunchDescription(
         [
             robot_model_arg,
+            namespace_arg,
             node_tf_bridge_opensot,
             node_real_rsp,
             node_opensot_rsp,

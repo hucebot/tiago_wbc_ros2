@@ -148,39 +148,45 @@ class TiagoOpenSoTNode(Node):
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self.create_subscription(Bool, "/opensot/pause", self._pause_cb, 10)
+        # Topic names are RELATIVE so the whole app stack follows the launch
+        # `namespace` (see bringup.launch.py). Kept ABSOLUTE: foreign namespaces we
+        # only consume ("/streamdeck/*", "/joint_states", "/<ctrl>/controller_state")
+        # and the hardware boundary ("/opensot/joint_states",
+        # "/opensot/base_velocity_command") -- the contract with the robot bridge and
+        # the (global) opensot robot_state_publisher.
+        self.create_subscription(Bool, "opensot/pause", self._pause_cb, 10)
         self.create_subscription(
-            PoseStamped, "/cartesian_interface/right/target_pose", self._right_target_cb, 10
+            PoseStamped, "cartesian_interface/right/target_pose", self._right_target_cb, 10
         )
         self.create_subscription(
-            PoseStamped, "/cartesian_interface/left/target_pose", self._left_target_cb, 10
+            PoseStamped, "cartesian_interface/left/target_pose", self._left_target_cb, 10
         )
         self.create_subscription(
-            Twist, "/cartesian_interface/base/target_twist", self._base_target_cb, 10
+            Twist, "cartesian_interface/base/target_twist", self._base_target_cb, 10
         )
         self.create_subscription(Bool, "/streamdeck/reset_config", self._reset_cb, 10)
         self.create_subscription(
-            MarkerArray, "/opensot/external_collisions", self._collision_scene_cb, 10
+            MarkerArray, "opensot/external_collisions", self._collision_scene_cb, 10
         )
-        self.create_subscription(Bool, "/opensot/gaze_lock", self._gaze_lock_cb, qos_state)
-        self.create_subscription(String, "/opensot/home_cmd", self._home_cmd_cb, 10)
+        self.create_subscription(Bool, "opensot/gaze_lock", self._gaze_lock_cb, qos_state)
+        self.create_subscription(String, "opensot/home_cmd", self._home_cmd_cb, 10)
 
         # --- Publishers ---
         self.joint_state_publisher = self.create_publisher(JointState, "/opensot/joint_states", 10)
         self.base_vel_publisher = self.create_publisher(Twist, "/opensot/base_velocity_command", 10)
-        self.reset_ok_publisher = self.create_publisher(Bool, "/opensot/reset_complete", 1)
-        self.home_done_pub = self.create_publisher(Bool, "/opensot/home_done", 10)
+        self.reset_ok_publisher = self.create_publisher(Bool, "opensot/reset_complete", 1)
+        self.home_done_pub = self.create_publisher(Bool, "opensot/home_done", 10)
         self.collision_distances_publisher = self.create_publisher(
-            Marker, "/opensot/viz/collision_distances", 10
+            Marker, "opensot/viz/collision_distances", 10
         )
         self.active_collisions_publisher = self.create_publisher(
-            MarkerArray, "/opensot/viz/active_collisions", 10
+            MarkerArray, "opensot/viz/active_collisions", 10
         )
         self.base_link_broadcaster = TransformBroadcaster(self)
 
         # --- Services ---
         self.enable_external_collision_service = self.create_service(
-            SetBool, "enable_external_obstacle", self.handle_enable_external_collision
+            SetBool, "opensot/enable_external_obstacle", self.handle_enable_external_collision
         )
 
         self.package_share_path = get_package_share_directory(ROBOT["config_package"])

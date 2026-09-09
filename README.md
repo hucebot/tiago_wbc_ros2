@@ -84,15 +84,20 @@ Stop everything with `make down`.
 
 ## Using the demo
 
+The app nodes run under a **namespace** (`tiago_pro` for `make tiago-pro`, `tiago`
+for `make tiago`), so the examples below are prefixed accordingly. Override it with
+`namespace:=…` on the launch.
+
 - **Move an arm** — drag the `left` / `right` interactive marker in RViz. Use the
   marker's right-click menu to enable/disable or reset a task.
 - **Home the robot** — call one of the `home_position/<name>` services
-  (e.g. `ros2 service call /home_position/home std_srvs/srv/Trigger`). Named
-  configs live in
+  (e.g. `ros2 service call /tiago_pro/home_position/home std_srvs/srv/Trigger`).
+  Named configs live in
   [config/home_poses.yaml](src/tiago_control_node/config/home_poses.yaml); the
-  solver interpolates to them collision-safely and publishes `/opensot/home_done`.
-- **Drive the base** — publish a `Twist` on `/cartesian_interface/base/target_twist`,
-  or use a joystick (`/joy`).
+  solver interpolates to them collision-safely and publishes
+  `/tiago_pro/opensot/home_done`.
+- **Drive the base** — publish a `Twist` on
+  `/tiago_pro/cartesian_interface/base/target_twist`, or use a joystick (`/joy`).
 
 ---
 
@@ -129,26 +134,109 @@ runs `colcon build` + `colcon test` in the prebuilt image on every push / PR.
 
 `bringup.launch.py` starts:
 
-| node | role |
-|------|------|
-| `tiago_pro_opensot_node` / `tiago_opensot_node` | the OpenSoT QP control loop (selected by `robot_model`) |
-| `cartesian_interface_node` | RViz markers, joystick, replay → Cartesian / base targets; homing forwarder |
-| `robot_state_publisher` ×2 | real robot TF and the `opensot/`-prefixed solver TF |
-| `rviz2`, `static_transform_publisher` | visualization + `opensot/world` anchor |
+| node | namespace | role |
+|------|-----------|------|
+| `tiago_pro_opensot_node` / `tiago_opensot_node` | `<namespace>` | the OpenSoT QP control loop (selected by `robot_model`) |
+| `cartesian_interface_node` | `<namespace>` | teleop **multiplexer** + homing coordinator (see below) |
+| `robot_state_publisher` ×2 | global | real-robot TF and the `opensot/`-prefixed solver TF |
+| `rviz2`, `static_transform_publisher` | global | visualization + `opensot/world` anchor |
 
-Key topics:
+```
+  RViz markers / Vive / replay / joystick
+                │
+                ▼
+      cartesian_interface_node          ── picks ONE source, pose-syncs, smooths
+                │
+                │  /<ns>/cartesian_interface/{left,right}/target_pose
+                │  /<ns>/cartesian_interface/base/target_twist
+                ▼
+      <robot>_opensot_node              ── OpenSoT hierarchical QP @ 100 Hz
+                │
+                ├─► /opensot/joint_states            ─► robot bridge + opensot RSP
+                ├─► /opensot/base_velocity_command   ─► robot base
+                └─► /<ns>/opensot/home_done          ─► cartesian_interface_node
 
-| topic | dir | type |
-|-------|-----|------|
-| `/cartesian_interface/{left,right}/target_pose` | in | `geometry_msgs/PoseStamped` |
-| `/cartesian_interface/base/target_twist` | in | `geometry_msgs/Twist` |
-| `/opensot/home_cmd`, `/opensot/pause`, `/opensot/gaze_lock` | in | `std_msgs/String`, `Bool`, `Bool` |
-| `/opensot/joint_states` | out | `sensor_msgs/JointState` (to the robot / RSP) |
-| `/opensot/home_done`, `/opensot/reset_complete` | out | `std_msgs/Bool` |
-| `/opensot/viz/*` | out | RViz markers (collision distances, active obstacles) |
+  home_position/<name>  ─►  /<ns>/opensot/home_cmd  ─►  both nodes (homing handshake)
+```
 
-Service: `enable_external_obstacle` (`std_srvs/SetBool`), `home_position/<name>`
-(`std_srvs/Trigger`).
+### `cartesian_interface_node` is a multiplexer
+
+It is the single writer of the solver's Cartesian/base targets. At any moment it
+forwards exactly **one** teleop source, chosen by `/streamdeck/teleop_mode`
+(`rviz` | `vive` | `replay`) and `/streamdeck/base_teleop_mode`
+(`joystick` | `navigation` | `vive`). On top of the raw forwarding it also:
+
+- **pose-syncs** on a source switch — it won't command a jump; it waits until the
+  incoming pose is within ~15 cm of the current end effector before it starts
+  streaming;
+- **smooths** base twists and scales joystick / Vive trackpad input;
+- drives the **grippers** (`/gripper_{side}_controller/joint_trajectory`) from the
+  Vive / replay gripper channels;
+- owns the RViz **interactive markers** and coordinates **homing** — on a
+  `home_position/<name>` call it stops commanding the arms, lets the solver
+  interpolate, then snaps the markers back onto the end effectors once the
+  `opensot/` TF has settled.
+
+### Vive teleoperation
+
+`vive` mode consumes the topics published by our
+[`vive_controller`](https://github.com/hucebot/vive_controller) package (HTC Vive
+trackers → `PoseStamped` / gripper / trackpad). Run `vive_controller` alongside
+this stack, switch `teleop_mode` to `vive`, and the wands drive the grippers while
+the right trackpad drives the base. Put `vive_controller` in the same `<namespace>`
+(or remap) so its `/vive/*` topics line up — those are the only cross-package
+contract.
+
+### ROS interface
+
+Names are shown for the default `tiago_pro` namespace. `opensot/*` and
+`cartesian_interface/*` are **relative** and follow `namespace:=`. Absolute names
+are deliberately outside it: **🔌 = hardware boundary** (one per physical robot,
+consumed by the robot bridge + the global `opensot` RSP), and foreign namespaces
+we only borrow (`/streamdeck/*`, `/joy`, `/vive/*`, `/motion_recorder/*`,
+`/replay/*`, `/joint_states`, `/tf`).
+
+<details>
+<summary><b>Topics &amp; services (click to expand)</b></summary>
+
+**Solver** (`<ns>/tiago_pro_opensot_control` | `<ns>/tiago_opensot_control`)
+
+| name | dir | type | peer |
+|------|-----|------|------|
+| `/<ns>/cartesian_interface/{left,right}/target_pose` | sub | `geometry_msgs/PoseStamped` | ← cartesian_interface |
+| `/<ns>/cartesian_interface/base/target_twist` | sub | `geometry_msgs/Twist` | ← cartesian_interface |
+| `/<ns>/opensot/pause` | sub | `std_msgs/Bool` | ← cartesian_interface |
+| `/<ns>/opensot/home_cmd` | sub | `std_msgs/String` | ← cartesian_interface / manual |
+| `/<ns>/opensot/gaze_lock` | sub | `std_msgs/Bool` | ← external (Stream Deck) |
+| `/<ns>/opensot/external_collisions` | sub | `visualization_msgs/MarkerArray` | ← `dummy_obstacles` / perception |
+| `/streamdeck/reset_config` | sub | `std_msgs/Bool` | ← external |
+| `/joint_states`, `/<ctrl>/controller_state` | sub | `sensor_msgs/JointState`, `control_msgs/…` | ← robot (startup sync only) |
+| `/opensot/joint_states` 🔌 | pub | `sensor_msgs/JointState` | → robot bridge + `opensot` RSP |
+| `/opensot/base_velocity_command` 🔌 | pub | `geometry_msgs/Twist` | → robot base |
+| `/<ns>/opensot/home_done` | pub | `std_msgs/Bool` | → cartesian_interface |
+| `/<ns>/opensot/reset_complete` | pub | `std_msgs/Bool` | → cartesian_interface |
+| `/<ns>/opensot/viz/{collision_distances,active_collisions}` | pub | `visualization_msgs/Marker(Array)` | → RViz |
+| `/<ns>/opensot/enable_external_obstacle` | srv | `std_srvs/SetBool` | toggle perception obstacles |
+| `/tf` | pub | `tf2_msgs/TFMessage` | `opensot/base_footprint` from the solver |
+
+**`cartesian_interface_node`** (`<ns>/cartesian_interface_node`)
+
+| name | dir | type | peer |
+|------|-----|------|------|
+| `/streamdeck/{teleop_mode,base_teleop_mode,reset_config}` | sub | `std_msgs/String`, `String`, `Bool` | ← Stream Deck |
+| `/joy` | sub | `sensor_msgs/Joy` | ← joystick |
+| `/vive/{left,right}/output_pose` | sub | `geometry_msgs/PoseStamped` | ← `vive_controller` |
+| `/vive/{left,right}/gripper`, `/vive/{right,left}/trackpad_*` | sub | `geometry_msgs/PointStamped` | ← `vive_controller` |
+| `/motion_recorder/pose_{left,right}`, `/replay/{left,right}/gripper` | sub | `geometry_msgs/PoseStamped`, `PointStamped` | ← replay |
+| `/<ns>/opensot/home_done`, `/<ns>/opensot/home_cmd` | sub | `std_msgs/Bool`, `String` | ← solver / self |
+| `/<ns>/cartesian_interface/{left,right}/target_pose` | pub | `geometry_msgs/PoseStamped` | → solver |
+| `/<ns>/cartesian_interface/base/target_twist` | pub | `geometry_msgs/Twist` | → solver |
+| `/<ns>/opensot/pause`, `/<ns>/opensot/home_cmd` | pub | `std_msgs/Bool`, `String` | → solver |
+| `/gripper_{left,right}_controller/joint_trajectory` | pub | `trajectory_msgs/JointTrajectory` | → ros2_control |
+| `/<ns>/home_position/<name>` | srv | `std_srvs/Trigger` | one per pose in `home_poses.yaml` |
+| `/<ns>/six_dof_marker_server/*` | — | interactive markers | ↔ RViz |
+
+</details>
 
 ---
 
@@ -183,8 +271,10 @@ defaults). So `DDS_ENV=local` → `cyclonedds_local.xml`, `DDS_ENV=robot` →
 
 ### Solver / interface tuning — [`config/params.yaml`](src/tiago_control_node/config/params.yaml)
 
-One section per node, keyed by the node name from the launch file. Values are
-seeded from the in-code defaults, so editing is safe and self-contained.
+One section per node, keyed `/**/<node_name>:` — the `/**` is a namespace wildcard
+so the file matches whatever `namespace:=` the launch pushes the nodes into.
+Values are seeded from the in-code defaults, so editing is safe and
+self-contained.
 
 | key | node | what it does |
 |-----|------|--------------|
@@ -196,7 +286,18 @@ seeded from the in-code defaults, so editing is safe and self-contained.
 | `joy.scale_linear`, `joy.scale_angular` | `cartesian_interface_node` | joystick → base velocity scaling |
 
 Applied automatically via `bringup.launch.py` (`--params-file`). Live-tweak a
-running node with `ros2 param set /<node> <key> <value>`.
+running node with `ros2 param set /<ns>/<node> <key> <value>`.
+
+### Namespace — `namespace:=` launch arg
+
+The solver + `cartesian_interface_node` run under a namespace (default `tiago_pro`
+for `robot_model:=pro`, else `tiago`) so two stacks can coexist on one DDS graph.
+The `robot_state_publisher`s, RViz, the `opensot/world` static TF and the two
+hardware-boundary topics stay global. The shipped
+[`tiago_dual.rviz`](src/tiago_control_node/rviz/tiago_dual.rviz) hardcodes the
+`tiago_pro` namespace in three places (the two `opensot/viz/*` marker topics and
+the interactive-marker namespace); for `robot_model:=dual` either pass
+`namespace:=tiago_pro` or swap those to `/tiago/…`.
 
 ### Named home poses — [`config/home_poses.yaml`](src/tiago_control_node/config/home_poses.yaml)
 
@@ -211,10 +312,10 @@ pro:
     head: [0.0, -0.71]
 ```
 
-Each entry becomes a `home_position/<name>` `Trigger` service; calling it makes
-the solver interpolate there collision-safely and publish `/opensot/home_done`.
-Add a pose by adding a block (arms are 7 values, head 2, torso 1) and rebuilding
-so the file lands in the package share dir.
+Each entry becomes a `/<ns>/home_position/<name>` `Trigger` service; calling it
+makes the solver interpolate there collision-safely and publish
+`/<ns>/opensot/home_done`. Add a pose by adding a block (arms are 7 values,
+head 2, torso 1) and rebuilding so the file lands in the package share dir.
 
 ### Collision model
 

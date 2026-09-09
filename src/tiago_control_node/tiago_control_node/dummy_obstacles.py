@@ -8,9 +8,11 @@ from visualization_msgs.msg import Marker, MarkerArray
 class DummyObstacles(Node):
     def __init__(self):
         super().__init__("dummy_obstacle_publisher")
-        self.pub = self.create_publisher(MarkerArray, "/opensot/external_collisions", 10)
+        # Relative: run this node in the same namespace as the solver, e.g.
+        #   ros2 run tiago_control_node dummy_obstacles --ros-args -r __ns:=/tiago_pro
+        self.pub = self.create_publisher(MarkerArray, "opensot/external_collisions", 10)
         self.timer = self.create_timer(1.0, self.publish_obstacles)
-        self.get_logger().info("Publishing dummy obstacles to /opensot/external_collisions...")
+        self.get_logger().info("Publishing dummy obstacles to <ns>/opensot/external_collisions...")
 
     def publish_obstacles(self):
         msg = MarkerArray()
