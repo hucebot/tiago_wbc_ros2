@@ -24,6 +24,7 @@
   <depend>python3-numpy</depend>
   <depend>python3-scipy</depend>
   <depend>python3-urdfdom-py</depend>
+  <depend>python3-yaml</depend>
 
   <!-- Runtime-only, not on rosdep: pyopensot, pyopensot_collision, xbot2_interface.
        These come from the prebuilt image (see .ci/Dockerfile / .ci/Dockerfile.base). -->

@@ -84,9 +84,9 @@ Stop everything with `make down`.
   marker's right-click menu to enable/disable or reset a task.
 - **Home the robot** — call one of the `home_position/<name>` services
   (e.g. `ros2 service call /home_position/home std_srvs/srv/Trigger`). Named
-  configs come from `MULTIPLE_HOME_CONFIGS_*` in
-  [utils.py](src/tiago_control_node/tiago_control_node/utils.py); the solver
-  interpolates to them collision-safely and publishes `/opensot/home_done`.
+  configs live in
+  [config/home_poses.yaml](src/tiago_control_node/config/home_poses.yaml); the
+  solver interpolates to them collision-safely and publishes `/opensot/home_done`.
 - **Drive the base** — publish a `Twist` on `/cartesian_interface/base/target_twist`,
   or use a joystick (`/joy`).
 
@@ -130,7 +130,6 @@ runs `colcon build` + `colcon test` in the prebuilt image on every push / PR.
 | `tiago_pro_opensot_node` / `tiago_opensot_node` | the OpenSoT QP control loop (selected by `robot_model`) |
 | `cartesian_interface_node` | RViz markers, joystick, replay → Cartesian / base targets; homing forwarder |
 | `robot_state_publisher` ×2 | real robot TF and the `opensot/`-prefixed solver TF |
-| `pose_transformer_node` | helper: reframes `/object_pose` into `torso_lift_link` |
 | `rviz2`, `static_transform_publisher` | visualization + `opensot/world` anchor |
 
 Key topics:
@@ -195,23 +194,23 @@ seeded from the in-code defaults, so editing is safe and self-contained.
 Applied automatically via `bringup.launch.py` (`--params-file`). Live-tweak a
 running node with `ros2 param set /<node> <key> <value>`.
 
-### Named home poses — [`utils.py`](src/tiago_control_node/tiago_control_node/utils.py)
+### Named home poses — [`config/home_poses.yaml`](src/tiago_control_node/config/home_poses.yaml)
 
-`MULTIPLE_HOME_CONFIGS_PRO` / `MULTIPLE_HOME_CONFIGS_DUAL` map a name to a joint
-config:
+One `pro:` and one `dual:` section, each mapping a name to a joint config:
 
-```python
-"table": {
-    "torso":     [0.34],
-    "arm_left":  [0.77, -1.81, 0.87, -2.18, -3.01, 1.98, 0.46],
-    "arm_right": [-2.64, -1.84, 0.47, -1.95, 2.90, 1.28, -0.04],
-    "head":      [0.0, -0.71],
-},
+```yaml
+pro:
+  table:
+    torso: [0.34]
+    arm_left:  [0.77, -1.81,  0.87, -2.18, -3.01, 1.98, 0.4618]
+    arm_right: [-2.64, -1.84,  0.47, -1.95,  2.9,  1.28, -0.037]
+    head: [0.0, -0.71]
 ```
 
-Each key becomes a `home_position/<name>` `Trigger` service; calling it makes the
-solver interpolate there collision-safely and publish `/opensot/home_done`. Add a
-pose by adding a dict entry (arms are 7 values, head 2, torso 1).
+Each entry becomes a `home_position/<name>` `Trigger` service; calling it makes
+the solver interpolate there collision-safely and publish `/opensot/home_done`.
+Add a pose by adding a block (arms are 7 values, head 2, torso 1) and rebuilding
+so the file lands in the package share dir.
 
 ### Collision model
 

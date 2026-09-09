@@ -1,12 +1,17 @@
 import os
-import sys
 import time
 import copy
 import json
 import array
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from tiago_control_node.utils import MULTIPLE_HOME_CONFIGS_PRO as home_configs, ObstacleData
+from tiago_control_node.utils import (
+    ObstacleData,
+    EPS_REGULARISATION,
+    load_home_poses,
+    q_index_map,
+    v_index_map,
+)
 
 # ROS 2 Interfaces
 import rclpy
@@ -35,6 +40,7 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
     QoSHistoryPolicy,
 )
+
 
 class TiagoOpenSoTNode(Node):
     def __init__(self):
@@ -121,13 +127,14 @@ class TiagoOpenSoTNode(Node):
 
         self.package_share_path = get_package_share_directory('tiago_dual_cartesio_config')
         self.urdf = self._load_urdf()
+        self.home_configs = load_home_poses("pro")
         self.get_logger().info("Tiago OpenSoT Control Node initialized successfully.")
 
     # --- CALLBACKS ---
     def _home_cmd_cb(self, msg: String):
-        if msg.data in home_configs:
+        if msg.data in self.home_configs:
             self.get_logger().info(f"Received native homing command for: {msg.data}")
-            self.homing_target_q = self._build_home_q(home_configs[msg.data])
+            self.homing_target_q = self._build_home_q(self.home_configs[msg.data])
             self.homing_active = True
         else:
             self.get_logger().warn(f"Unknown home config: {msg.data}")
@@ -185,17 +192,21 @@ class TiagoOpenSoTNode(Node):
             marker.points.append(Point(x=pb[0], y=pb[1], z=pb[2]))
         self.collision_distances_publisher.publish(marker)
 
-    def pub_to_control_bridge(self, joint_state_msg, q, dq):
+    def pub_to_control_bridge(self, joint_state_msg, q, dq, qidx, vidx, wheel_names, tail_start):
         joint_state_msg.header.stamp = self.get_clock().now().to_msg()
-        # Continuous wheel joints are stored as (cos, sin) pairs at q[7..14];
-        # recover the angle with atan2(sin, cos) on the *same* pair.
-        joint_state_msg.position[0] = np.arctan2(q[8], q[7])
-        joint_state_msg.position[1] = np.arctan2(q[10], q[9])
-        joint_state_msg.position[2] = np.arctan2(q[12], q[11])
-        joint_state_msg.position[3] = np.arctan2(q[14], q[13])
-        joint_state_msg.position[4:] = array.array('d', q[15:])
+
+        # Continuous wheel joints are stored as (cos, sin) pairs -> recover the angle.
+        for out_i, name in enumerate(wheel_names):
+            ci = qidx[name]
+            joint_state_msg.position[out_i] = float(np.arctan2(q[ci + 1], q[ci]))
+
+        joint_state_msg.position[len(wheel_names):] = array.array('d', q[tail_start:])
         joint_state_msg.velocity = array.array('d', [0.0] * len(joint_state_msg.position))
-        joint_state_msg.velocity[4] = dq[10] / self.dt
+
+        # Torso gets a velocity feed-forward (it is slow and benefits from it).
+        if "torso_lift_joint" in vidx:
+            joint_state_msg.velocity[len(wheel_names)] = dq[vidx["torso_lift_joint"]] / self.dt
+
         self.joint_state_publisher.publish(joint_state_msg)
 
     def publish_active_obstacles(self, current_time):
@@ -215,34 +226,28 @@ class TiagoOpenSoTNode(Node):
             self.active_collisions_publisher.publish(msg)
 
     def _load_urdf(self) -> str:
+        urdf_path = os.path.join(self.package_share_path, "capsules", "urdf", "tiago_pro_capsules.urdf")
         try:
-            urdf_path = os.path.join(self.package_share_path, "capsules", "urdf", "tiago_pro_capsules.urdf")
-            with open(urdf_path, 'r') as f: return f.read()
-        except Exception as e:
-            self.get_logger().fatal(f"Could not load Pro URDF: {e}")
-            sys.exit(1)
+            with open(urdf_path, 'r') as f:
+                return f.read()
+        except OSError as e:
+            raise RuntimeError(f"Could not load Pro capsule URDF at {urdf_path}: {e}") from e
 
     def from_state_msg(self, msg, model):
         q = np.zeros(model.getJointPosition().size)
         q[0:3] = [0.0, 0.0, 0.0]
         q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
-        home_map = self._build_home_q(home_configs["home"])
+        home_map = self._build_home_q(self.home_configs["home"])
         ros_map = dict(zip(msg.name, msg.position)) if msg else {}
-        idx = 7
 
-        for name in model.getJointNames():
-            if name == 'reference':
+        for name, idx in q_index_map(model).items():
+            if "wheel" in name or idx >= len(q):
                 continue
-            if "wheel" in name:
-                idx += 2
-            else:
-                if idx < len(q):
-                    if name in ros_map:
-                        q[idx] = ros_map[name]
-                    elif name in home_map:
-                        q[idx] = home_map[name]
-                idx += 1
+            if name in ros_map:
+                q[idx] = ros_map[name]
+            elif name in home_map:
+                q[idx] = home_map[name]
         return q
 
     def wait_for_initial_state(self, timeout=4.0):
@@ -314,25 +319,15 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     manip_right = Manipulability(model, g_right)
     gaze = Gaze("Gaze", model, "base_link", "head_front_camera_link")
 
+    # getJointLimits() is velocity-space sized (nv) -> index it with v_index_map.
     qmin, qmax = model.getJointLimits()
     qmax_padded = np.copy(qmax)
     qmin_padded = np.copy(qmin)
-
-    # getJointLimits() is VELOCITY-space sized (nv): 6 floating-base DOF, then one
-    # entry per joint -- continuous "wheel" joints are 1 DOF here (unlike in q,
-    # where they take 2 slots). So walk it as: start at 6, step every joint by 1.
-    idx = 6
-    for name in model.getJointNames():
-        if name == 'reference':
-            continue
-
-        # Only pad the arms
-        if "arm_left" in name or "arm_right" in name:
+    for name, idx in v_index_map(model).items():
+        if ("arm_left" in name or "arm_right" in name) and idx < len(qmax):
             joint_range = qmax[idx] - qmin[idx]
             qmax_padded[idx] = qmax[idx] - joint_range * 0.025
             qmin_padded[idx] = qmin[idx] + joint_range * 0.025
-
-        idx += 1
 
     qlims = JointLimits(model, qmax_padded, qmin_padded)
     dqlims = VelocityLimits(model, model.getVelocityLimits(), node.dt)
@@ -356,7 +351,7 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
         "base": base, "manip_left": manip_left, "manip_right": manip_right,
         "gaze": gaze, "q_homing": q_homing
     }
-    return pysot.iHQP(stack, eps_regularisation=1e10), stack, tasks, collision_avoidance
+    return pysot.iHQP(stack, eps_regularisation=EPS_REGULARISATION), stack, tasks, collision_avoidance
 
 def sync_external_collisions(node: TiagoOpenSoTNode, collision_avoidance: CollisionAvoidance):
     for obj_id, obs in list(node.active_collisions.items()):
@@ -409,9 +404,18 @@ def main(args=None):
     msg.name = model.getJointNames()[1:]
     msg.position = [0.0] * len(msg.name)
 
+    qidx = q_index_map(model)
+    vidx = v_index_map(model)
+    wheel_names = [n for n in model.getJointNames() if "wheel" in n]
+    tail_start = min(i for n, i in qidx.items() if "wheel" not in n)
+
     w_T_b_tf = TransformStamped()
     w_T_b_tf.header.frame_id, w_T_b_tf.child_frame_id = "opensot/world", "opensot/base_footprint"
-    T_Gaze_0 = model.getPose("base_link", "base_link")
+
+    # Safety latch: after this many consecutive solver failures, stop sending
+    # joint commands (robot holds its last pose) until the solver recovers.
+    SOLVER_FAIL_LIMIT = 20
+    solver_fail_streak = 0
 
     try:
         while rclpy.ok():
@@ -426,9 +430,6 @@ def main(args=None):
                 for t in tasks.values():
                     if hasattr(t, 'reset'): t.reset()
                 node.reset_ok_publisher.publish(Bool(data=True))
-
-            model.setJointPosition(q)
-            model.update()
 
             model.setJointPosition(q)
             model.update()
@@ -454,15 +455,9 @@ def main(args=None):
                     node.homing_start_q = np.copy(q)
                     node.homing_target_q_full = np.copy(q)
 
-                    idx = 7
-                    for name in model.getJointNames():
-                        if name == 'reference': continue
-                        if "wheel" in name:
-                            idx += 2
-                        else:
-                            if name in node.homing_target_q:
-                                node.homing_target_q_full[idx] = node.homing_target_q[name]
-                            idx += 1
+                    for name, idx in q_index_map(model).items():
+                        if name in node.homing_target_q and idx < len(node.homing_target_q_full):
+                            node.homing_target_q_full[idx] = node.homing_target_q[name]
 
                     tasks["q_homing"].setWeight(0.5)
                     # High lambda so it aggressively tracks the moving setpoint
@@ -478,17 +473,11 @@ def main(args=None):
                 q_ref_interp = node.homing_start_q + alpha * (node.homing_target_q_full - node.homing_start_q)
                 tasks["q_homing"].setReference(q_ref_interp)
 
-                # Track Homing Tolerance Progress
+                # Track homing tolerance progress
                 q_err = 0.0
-                idx = 7
-                for name in model.getJointNames():
-                    if name == 'reference': continue
-                    if "wheel" in name:
-                        idx += 2
-                    else:
-                        if name in node.homing_target_q:
-                            q_err += (q[idx] - node.homing_target_q[name])**2
-                        idx += 1
+                for name, idx in q_index_map(model).items():
+                    if name in node.homing_target_q and idx < len(q):
+                        q_err += (q[idx] - node.homing_target_q[name]) ** 2
                 q_err = np.sqrt(q_err)
 
                 # Finish once the interpolation has elapsed AND (error is low OR we hit the
@@ -565,13 +554,24 @@ def main(args=None):
             dq = np.zeros(model.getNv())
             try:
                 dq = solver.solve()
+                if solver_fail_streak >= SOLVER_FAIL_LIMIT:
+                    node.get_logger().warn("Solver recovered; resuming joint commands.")
+                solver_fail_streak = 0
             except Exception as e:
+                solver_fail_streak += 1
                 node.get_logger().error(f"Solver fail: {e}", throttle_duration_sec=1.0)
 
             q = model.sum(q, dq)
 
-            if not node.is_paused:
-                node.pub_to_control_bridge(msg, q, dq)
+            solver_halted = solver_fail_streak >= SOLVER_FAIL_LIMIT
+            if solver_halted and solver_fail_streak == SOLVER_FAIL_LIMIT:
+                node.get_logger().error(
+                    f"Solver failed {SOLVER_FAIL_LIMIT}x in a row -- holding position, "
+                    "not publishing joint commands until it recovers."
+                )
+
+            if not node.is_paused and not solver_halted:
+                node.pub_to_control_bridge(msg, q, dq, qidx, vidx, wheel_names, tail_start)
 
             ts = node.get_clock().now().to_msg()
             w_T_b_tf.header.stamp = ts

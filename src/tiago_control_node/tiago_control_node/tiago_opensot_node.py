@@ -11,7 +11,7 @@ node -- see TODO.md, section P2.
 
 Differences from the Pro node that are intentional here:
   * joint <-> configuration-vector indices are resolved once from the model
-    (``_q_index_map`` / ``_v_index_map``) instead of being hard-coded, so the
+    (``q_index_map`` / ``v_index_map`` from utils) instead of being hard-coded, so the
     off-by-N wheel bug in the Pro node cannot happen here;
   * the gaze task is opt-in (``enable_gaze`` parameter, default False) because
     the Dual capsule model does not necessarily expose a head-camera link;
@@ -57,9 +57,12 @@ except ImportError:  # older pyopensot builds
 from pyopensot_collision.constraints.velocity import CollisionAvoidance
 
 from tiago_control_node.utils import (
-    MULTIPLE_HOME_CONFIGS_DUAL as HOME_CONFIGS,
     collision_list as DEFAULT_COLLISION_LIST,
     ObstacleData,
+    EPS_REGULARISATION,
+    load_home_poses,
+    q_index_map,
+    v_index_map,
 )
 
 # --- Robot-specific configuration -------------------------------------------------
@@ -178,6 +181,7 @@ class TiagoOpenSoTNode(Node):
 
         self.package_share_path = get_package_share_directory(ROBOT["config_package"])
         self.urdf = self._load_urdf()
+        self.home_configs = load_home_poses("dual")
 
         if not self.enable_gaze:
             self.get_logger().info("Gaze task disabled (set 'enable_gaze' to turn it on).")
@@ -206,37 +210,7 @@ class TiagoOpenSoTNode(Node):
             )
             return {tuple(sorted(pair)) for pair in DEFAULT_COLLISION_LIST}
 
-    # --- Index helpers -------------------------------------------------------------
-    @staticmethod
-    def _q_index_map(model: "xbi.ModelInterface2") -> dict:
-        """joint name -> start index in the configuration vector q.
-
-        q = [3 base translation][4 base quaternion] then one slot per DOF,
-        except continuous 'wheel' joints which use 2 slots (cos, sin).
-        """
-        idx, out = 7, {}
-        for name in model.getJointNames():
-            if name == "reference":
-                continue
-            out[name] = idx
-            idx += 2 if "wheel" in name else 1
-        return out
-
-    @staticmethod
-    def _v_index_map(model: "xbi.ModelInterface2") -> dict:
-        """joint name -> index in velocity space (dq, and also the nv-sized vectors
-        returned by getJointLimits() / getVelocityLimits()).
-
-        6 floating-base DOF, then 1 per joint -- continuous 'wheel' joints are a
-        single DOF here, unlike in q.
-        """
-        idx, out = 6, {}
-        for name in model.getJointNames():
-            if name == "reference":
-                continue
-            out[name] = idx
-            idx += 1
-        return out
+    # Joint <-> vector index maps live in utils (q_index_map / v_index_map).
 
     def _build_home_q(self, config_dict: dict) -> dict:
         jnt_map = {}
@@ -254,10 +228,10 @@ class TiagoOpenSoTNode(Node):
         q = np.zeros(model.getJointPosition().size)
         q[3:7] = [0.0, 0.0, 0.0, 1.0]  # identity quaternion for the floating base
 
-        home_map = self._build_home_q(HOME_CONFIGS[ROBOT["default_home_key"]])
+        home_map = self._build_home_q(self.home_configs[ROBOT["default_home_key"]])
         ros_map = dict(zip(msg.name, msg.position)) if msg else {}
 
-        for name, i in self._q_index_map(model).items():
+        for name, i in q_index_map(model).items():
             if "wheel" in name:
                 q[i] = 1.0  # (cos, sin) = (1, 0)
                 continue
@@ -271,9 +245,9 @@ class TiagoOpenSoTNode(Node):
 
     # --- Callbacks ---------------------------------------------------------------
     def _home_cmd_cb(self, msg: String):
-        if msg.data in HOME_CONFIGS:
+        if msg.data in self.home_configs:
             self.get_logger().info(f"Received native homing command for: {msg.data}")
-            self.homing_target_q = self._build_home_q(HOME_CONFIGS[msg.data])
+            self.homing_target_q = self._build_home_q(self.home_configs[msg.data])
             self.homing_active = True
         else:
             self.get_logger().warn(f"Unknown home config: {msg.data}")
@@ -465,7 +439,7 @@ def setup_opensot_stack(model: "xbi.ModelInterface2", node: TiagoOpenSoTNode):
     qmin, qmax = model.getJointLimits()
     qmin_padded, qmax_padded = np.copy(qmin), np.copy(qmax)
     margin = ROBOT["joint_limit_margin"]
-    for name, i in node._v_index_map(model).items():
+    for name, i in v_index_map(model).items():
         if ("arm_left" in name or "arm_right" in name) and i < len(qmax):
             rng = qmax[i] - qmin[i]
             qmax_padded[i] = qmax[i] - rng * margin
@@ -497,7 +471,7 @@ def setup_opensot_stack(model: "xbi.ModelInterface2", node: TiagoOpenSoTNode):
         stack = stack << collision_avoidance
     stack = stack << base_con % [2, 3, 4]
 
-    solver = pysot.iHQP(stack, eps_regularisation=1e10)
+    solver = pysot.iHQP(stack, eps_regularisation=EPS_REGULARISATION)
     return solver, stack, tasks, collision_avoidance
 
 
@@ -570,8 +544,8 @@ def main(args=None):
 
         solver, stack, tasks, collision_avoidance = setup_opensot_stack(model, node)
 
-        qidx = node._q_index_map(model)
-        vidx = node._v_index_map(model)
+        qidx = q_index_map(model)
+        vidx = v_index_map(model)
         wheel_names = [n for n in model.getJointNames() if "wheel" in n]
         tail_start = min(i for n, i in qidx.items() if "wheel" not in n)
 
@@ -582,6 +556,11 @@ def main(args=None):
         w_T_b_tf = TransformStamped()
         w_T_b_tf.header.frame_id = "opensot/world"
         w_T_b_tf.child_frame_id = "opensot/base_footprint"
+
+        # Safety latch: after this many consecutive solver failures, stop sending
+        # joint commands (robot holds its last pose) until the solver recovers.
+        SOLVER_FAIL_LIMIT = 20
+        solver_fail_streak = 0
 
         while rclpy.ok():
             start = time.perf_counter()
@@ -704,12 +683,23 @@ def main(args=None):
             dq = np.zeros(model.getNv())
             try:
                 dq = solver.solve()
+                if solver_fail_streak >= SOLVER_FAIL_LIMIT:
+                    node.get_logger().warn("Solver recovered; resuming joint commands.")
+                solver_fail_streak = 0
             except Exception as e:  # noqa: BLE001
+                solver_fail_streak += 1
                 node.get_logger().error(f"Solver fail: {e}", throttle_duration_sec=1.0)
 
             q = model.sum(q, dq)
 
-            if not node.is_paused:
+            solver_halted = solver_fail_streak >= SOLVER_FAIL_LIMIT
+            if solver_halted and solver_fail_streak == SOLVER_FAIL_LIMIT:
+                node.get_logger().error(
+                    f"Solver failed {SOLVER_FAIL_LIMIT}x in a row -- holding position, "
+                    "not publishing joint commands until it recovers."
+                )
+
+            if not node.is_paused and not solver_halted:
                 node.pub_to_control_bridge(msg, q, dq, qidx, vidx, wheel_names, tail_start)
 
             ts = node.get_clock().now().to_msg()

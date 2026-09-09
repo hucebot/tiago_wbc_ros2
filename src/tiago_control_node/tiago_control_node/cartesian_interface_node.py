@@ -13,12 +13,7 @@ from tf2_ros import Buffer, TransformListener, TransformException
 from geometry_msgs.msg import PoseStamped, PointStamped, Twist, Vector3, Pose
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-# Package info for URDF
-from tiago_control_node.utils import (
-    MULTIPLE_HOME_CONFIGS_DUAL,
-    MULTIPLE_HOME_CONFIGS_PRO,
-)
-from ament_index_python.packages import get_package_share_directory
+from tiago_control_node.utils import load_home_poses
 
 # Interactive markers (Control through RViz)
 from interactive_markers.menu_handler import MenuHandler
@@ -50,6 +45,7 @@ class CartesianInterface(Node):
         self.vive_poses = {"right": None, "left": None}
         self.replay_poses = {"right": None, "left": None}
         self.marker_poses = {}
+        self._fk_cache = {}  # last good FK pose per side (fallback on a TF miss)
         self.task_enabled = {"right": True, "left": True}
         self.is_pressed = {"right": False, "left": False}
 
@@ -75,8 +71,9 @@ class CartesianInterface(Node):
         else:
             self.get_logger().info(f"URDF received successfully for {self.model_type}!")
 
+        self.home_configs = load_home_poses("pro" if self.model_type == "pro" else "dual")
+
         if self.model_type == "pro":
-            self.home_configs = MULTIPLE_HOME_CONFIGS_PRO
             self.frames = {
                 "right": "gripper_right_grasping_link",
                 "left": "gripper_left_grasping_link",
@@ -86,7 +83,6 @@ class CartesianInterface(Node):
             self.gripper_open_pos = 0.0
             self.gripper_closed_pos = 0.8
         else:
-            self.home_configs = MULTIPLE_HOME_CONFIGS_DUAL
             self.frames = {
                 "right": "gripper_right_grasping_frame",
                 "left": "gripper_left_grasping_frame",
@@ -319,16 +315,24 @@ class CartesianInterface(Node):
         base_frame = self._osot(self.frames[f"base_{side}"])
         target_frame = self._osot(self.frames[side])
         try:
-            t = self.tf_buffer.lookup_transform(
-                base_frame, target_frame, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)
-            )
+            # Non-blocking: this runs in the 100 Hz timer, so we must not wait on
+            # TF. _wait_for_tf() has already blocked until the tree is up.
+            t = self.tf_buffer.lookup_transform(base_frame, target_frame, rclpy.time.Time())
             p = Pose()
             p.position.x = t.transform.translation.x
             p.position.y = t.transform.translation.y
             p.position.z = t.transform.translation.z
             p.orientation = t.transform.rotation
+            self._fk_cache[side] = p
             return p
-        except TransformException:
+        except TransformException as e:
+            cached = self._fk_cache.get(side)
+            if cached is not None:
+                return cached
+            self.get_logger().warn(
+                f"FK lookup {base_frame} <- {target_frame} failed and no cached pose: {e}",
+                throttle_duration_sec=2.0,
+            )
             p = Pose()
             p.orientation.w = 1.0
             return p
