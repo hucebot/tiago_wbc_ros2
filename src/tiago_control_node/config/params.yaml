@@ -11,16 +11,20 @@ tiago_pro_opensot_control:
   ros__parameters:
     control_dt: 0.01          # control period in seconds (100 Hz)
 
+    enable_gaze: true         # build the head-gaze task (looks at the right gripper)
+
     # Task gains (lambda = proportional gain on the task error)
     lambdas:
       gripper_left: 0.1
       gripper_right: 0.1
       postural: 0.08
       base: 0.1
+      gaze: 1.0              # drop toward ~0.3 if the head motion is jerky
 
     frames:
       world: "world"
       base_link: "base_link"
+      camera: "head_front_camera_link"
       left_gripper: "gripper_left_grasping_link"
       right_gripper: "gripper_right_grasping_link"
 

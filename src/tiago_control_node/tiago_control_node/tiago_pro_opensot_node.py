@@ -16,8 +16,15 @@ from ament_index_python.packages import get_package_share_directory
 from control_msgs.msg import JointTrajectoryControllerState
 from geometry_msgs.msg import Point, PoseStamped, TransformStamped, Twist
 from pyopensot.constraints.velocity import JointLimits, VelocityLimits
-from pyopensot.tasks.velocity import Cartesian, Gaze, Manipulability, Postural
+from pyopensot.tasks.velocity import Cartesian, Manipulability, Postural
 from pyopensot_collision.constraints.velocity import CollisionAvoidance
+
+try:
+    from pyopensot.tasks.velocity import Gaze
+
+    _HAS_GAZE = True
+except ImportError:  # older pyopensot builds
+    _HAS_GAZE = False
 from rclpy.node import Node
 from rclpy.qos import (
     QoSHistoryPolicy,
@@ -53,10 +60,13 @@ class TiagoOpenSoTNode(Node):
             ("lambdas.gripper_left", 0.1),
             ("lambdas.postural", 0.08),
             ("lambdas.base", 0.1),
+            ("lambdas.gaze", 1.0),
+            ("enable_gaze", True),
             ("frames.right_gripper", "gripper_right_grasping_link"),
             ("frames.left_gripper", "gripper_left_grasping_link"),
             ("frames.base_link", "base_link"),
             ("frames.world", "world"),
+            ("frames.camera", "head_front_camera_link"),
             ("base_frames.right_arm_task", "base_link"),
             ("base_frames.left_arm_task", "base_link"),
             ("base_frames.base_task", "world"),
@@ -69,12 +79,15 @@ class TiagoOpenSoTNode(Node):
         self.l_left = self.get_parameter("lambdas.gripper_left").value
         self.l_postural = self.get_parameter("lambdas.postural").value
         self.l_base = self.get_parameter("lambdas.base").value
+        self.l_gaze = self.get_parameter("lambdas.gaze").value
+        self.enable_gaze = self.get_parameter("enable_gaze").value and _HAS_GAZE
 
         # --- Frames ---
         self.frame_right = self.get_parameter("frames.right_gripper").value
         self.frame_left = self.get_parameter("frames.left_gripper").value
         self.frame_base = self.get_parameter("frames.base_link").value
         self.frame_world = self.get_parameter("frames.world").value
+        self.frame_camera = self.get_parameter("frames.camera").value
         self.base_right_arm = self.get_parameter("base_frames.right_arm_task").value
         self.base_left_arm = self.get_parameter("base_frames.left_arm_task").value
         self.base_robot = self.get_parameter("base_frames.base_task").value
@@ -87,8 +100,10 @@ class TiagoOpenSoTNode(Node):
         self.enable_external_obstacle = False
         self.active_collisions = {}
         self.is_paused = False
-        self.gaze_locked = True
+        # Runtime gaze toggle via /opensot/gaze_lock; starts active when gaze is enabled.
+        self.gaze_locked = not self.enable_gaze
         self.home_settle_until = 0.0  # ignore incoming arm targets until this time
+        self._post_home_check = 0.0  # one-shot post-homing sanity log
 
         # Homing States
         self.homing_active = False
@@ -372,7 +387,16 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
 
     manip_left = Manipulability(model, g_left)
     manip_right = Manipulability(model, g_right)
-    gaze = Gaze("Gaze", model, "base_link", "head_front_camera_link")
+
+    gaze = None
+    if node.enable_gaze:
+        try:
+            gaze = Gaze("Gaze", model, node.frame_base, node.frame_camera)
+        except Exception as e:  # noqa: BLE001 - xbot2 raises plain exceptions
+            node.get_logger().warn(f"Could not create Gaze task ({e}); continuing without it.")
+            gaze = None
+    else:
+        node.get_logger().info("Gaze task disabled (set 'enable_gaze' to turn it on).")
 
     # getJointLimits() is velocity-space sized (nv) -> index it with v_index_map.
     qmin, qmax = model.getJointLimits()
@@ -403,11 +427,11 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     ]
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
+    top = g_left + g_right + base % [0, 1, 5] + q_homing
+    if gaze is not None:
+        top = top + gaze
     stack = (
-        (
-            (g_left + g_right + base % [0, 1, 5] + q_homing + gaze)
-            / (postural[6:] + 0.005 * manip_left + 0.005 * manip_right)
-        )
+        (top / (postural[6:] + 0.005 * manip_left + 0.005 * manip_right))
         << qlims
         << dqlims
         << collision_avoidance
@@ -421,9 +445,10 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
         "base": base,
         "manip_left": manip_left,
         "manip_right": manip_right,
-        "gaze": gaze,
         "q_homing": q_homing,
     }
+    if gaze is not None:
+        tasks["gaze"] = gaze
     return (
         pysot.iHQP(stack, eps_regularisation=EPS_REGULARISATION),
         stack,
@@ -533,10 +558,9 @@ def main(args=None):
             model.setJointPosition(q)
             model.update()
 
-            # Tell the robot what to look at (e.g., the right gripper)
-            if not node.homing_active:
-                T_target = model.getPose("gripper_right_grasping_link", "base_link")
-                tasks["gaze"].setGaze(T_target)
+            # Point the head at the right gripper while not homing.
+            if "gaze" in tasks and not node.homing_active:
+                tasks["gaze"].setGaze(model.getPose(node.frame_right, node.frame_base))
 
             # --- NATIVE HOMING PROCEDURE ---
             # Steer q_homing, postural AND both arm Cartesian references to the
@@ -559,7 +583,8 @@ def main(args=None):
                     tasks["q_homing"].setWeight(0.5)
                     tasks["q_homing"].setLambda(0.1)
                     tasks["postural"].setLambda(0.1)
-                    tasks["gaze"].setLambda(0.0)
+                    if "gaze" in tasks:
+                        tasks["gaze"].setLambda(0.0)
 
                 # Reject stale arm targets during homing and for 0.5 s after.
                 node.home_settle_until = time.perf_counter() + 0.5
@@ -616,13 +641,7 @@ def main(args=None):
                     node.target_right = None
                     node.target_left = None
 
-                    _ee = model.getPose(node.frame_right, node.base_right_arm)
-                    node.get_logger().info(
-                        f"[post-home] completion r_ee=({_ee.translation[0]:.3f}, "
-                        f"{_ee.translation[1]:.3f}, {_ee.translation[2]:.3f})  q_err={q_err:.3f}"
-                    )
-                    node._post_home_until = time.perf_counter() + 2.0
-
+                    node._post_home_check = time.perf_counter() + 1.5
                     node.home_done_pub.publish(Bool(data=True))
             else:
                 # ONLY evaluate cartesian goals when NOT homing
@@ -650,20 +669,15 @@ def main(args=None):
                         # No target -> hold exactly here (reset() drifts in this build).
                         _hold_cartesian(task, model, frame, base)
 
-            # Gaze Task (ONLY update lambda if we are NOT homing!)
-            if not node.homing_active:
-                # Fetch the exact dimension the task expects (likely 3)
+            # Gaze weight / lambda (only when not homing). /opensot/gaze_lock toggles it.
+            if "gaze" in tasks and not node.homing_active:
                 gaze_dim = tasks["gaze"].getTaskSize()
-
                 if node.gaze_locked:
                     tasks["gaze"].setLambda(0.0)
-                    # Safely set an all-zero matrix of the correct size
                     tasks["gaze"].setWeight(np.zeros((gaze_dim, gaze_dim)))
                 else:
-                    tasks["gaze"].setLambda(1.0)
-                    # Safely set a scaled identity matrix of the correct size
+                    tasks["gaze"].setLambda(node.l_gaze)
                     tasks["gaze"].setWeight(np.eye(gaze_dim))
-            # NOTE: Duplicate Cartesian command block removed from here!
 
             # Base Commands
             v = node.target_base_twist
@@ -689,18 +703,16 @@ def main(args=None):
 
             q = model.sum(q, dq)
 
-            if time.perf_counter() < getattr(node, "_post_home_until", 0.0):
-                model.setJointPosition(q)
-                model.update()
-                _ee = model.getPose(node.frame_right, node.base_right_arm)
+            # One-shot sanity check ~1.5 s after a home: did the arm hold?
+            if node._post_home_check and time.perf_counter() >= node._post_home_check:
+                node._post_home_check = 0.0
                 _e = 0.0
                 for _n, _i in qidx.items():
                     if _n in node.homing_target_q and _i < len(q):
                         _e += (q[_i] - node.homing_target_q[_n]) ** 2
                 node.get_logger().info(
-                    f"[post-home] r_ee=({_ee.translation[0]:.3f}, {_ee.translation[1]:.3f}, "
-                    f"{_ee.translation[2]:.3f})  q_err={_e ** 0.5:.3f}  |dq|={np.linalg.norm(dq):.4f}",
-                    throttle_duration_sec=0.1,
+                    f"[post-home +1.5s] q_err={_e ** 0.5:.3f}  |dq|={np.linalg.norm(dq):.4f} "
+                    "(should match completion)"
                 )
 
             solver_halted = solver_fail_streak >= SOLVER_FAIL_LIMIT
