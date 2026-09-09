@@ -1,0 +1,27 @@
+# Lint / format config for the tiago_control_node package.
+line-length = 100
+target-version = "py310"
+
+# Only our code -- never the vendored submodules or colcon build output.
+extend-exclude = ["external", "src/build", "src/install", "src/log"]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (undefined names, unused imports)
+    "W",   # pycodestyle warnings
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # function call in argument default (rclpy params / Duration use this)
+    "UP038",  # isinstance(x, (A, B)) tuple form is fine and clear
+]
+
+[lint.per-file-ignores]
+"src/tiago_control_node/test/*" = ["E402"]  # sys.path juggling before imports
+
+[format]
+quote-style = "double"

@@ -229,8 +229,7 @@ __marimo__/
 .idea
 
 .vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
+TODO.md
 
 # colcon/CMake output
 build

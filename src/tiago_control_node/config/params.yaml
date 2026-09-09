@@ -1,19 +1,31 @@
-tiago_dual_control:
+# Parameters are matched by node name. The `/**/` prefix is a namespace wildcard,
+# so these match whatever `namespace` bringup.launch.py pushes the app nodes into
+# (default: /tiago_pro or /tiago). Node names come from the `name=` in the launch:
+#   tiago_pro_opensot_control  -> node_solver_pro   (robot_model:=pro)
+#   tiago_opensot_control      -> node_solver_dual  (robot_model:=dual)
+#   cartesian_interface_node   -> node_cartesian_interface
+#
+# Values here are seeded from the nodes' in-code defaults, so this file is the
+# live tuning surface without changing current behavior.
+
+/**/tiago_pro_opensot_control:
   ros__parameters:
-    control_dt: 0.025 # 100Hz
+    control_dt: 0.01          # control period in seconds (100 Hz)
 
-    # Task Gains (Lambdas)
+    enable_gaze: true         # build the head-gaze task (looks at the right gripper)
+
+    # Task gains (lambda = proportional gain on the task error)
     lambdas:
-      gripper_left: 0.3
-      gripper_right: 0.3
-      postural: 0.05
-      base: 0.05
+      gripper_left: 0.1
+      gripper_right: 0.1
+      postural: 0.08
+      base: 0.1
+      gaze: 0.3
 
-    # Frame Names
     frames:
       world: "world"
       base_link: "base_link"
-      torso_link: "base_link"
+      camera: "head_front_camera_link"
       left_gripper: "gripper_left_grasping_link"
       right_gripper: "gripper_right_grasping_link"
 
@@ -22,6 +34,31 @@ tiago_dual_control:
       left_arm_task: "base_link"
       base_task: "world"
 
+/**/tiago_opensot_control:      # TIAGo Dual
+  ros__parameters:
+    control_dt: 0.01
+    enable_gaze: false
+
+    lambdas:
+      gripper_left: 0.1
+      gripper_right: 0.1
+      postural: 0.08
+      base: 0.1
+
+    frames:
+      world: "world"
+      base_link: "base_link"
+      camera: "head_front_camera_link"
+      left_gripper: "gripper_left_grasping_frame"
+      right_gripper: "gripper_right_grasping_frame"
+
+    base_frames:
+      right_arm_task: "base_link"
+      left_arm_task: "base_link"
+      base_task: "world"
+
+/**/cartesian_interface_node:
+  ros__parameters:
     joy:
-      scale_linear: 0.2
-      scale_angular: 0.3
+      scale_linear: 0.3        # base teleop: m/s per unit joystick axis
+      scale_angular: 0.3       # base teleop: rad/s per unit joystick axis

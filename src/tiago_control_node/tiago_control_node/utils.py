@@ -1,12 +1,77 @@
-import numpy as np
+import os
 from dataclasses import dataclass
+
 from visualization_msgs.msg import Marker
 
 
 @dataclass
 class ObstacleData:
     marker: Marker
-    status: str # "PENDING_ADD", "ACTIVE", "PENDING_DELETE"
+    status: str  # "PENDING_ADD", "ACTIVE", "PENDING_DELETE"
+
+
+def load_home_poses(robot_model: str) -> dict:
+    """Return the named home poses for ``robot_model`` ("pro" or "dual").
+
+    Reads ``config/home_poses.yaml`` from the installed package share directory.
+    Each top value is ``{torso, arm_left, arm_right, head}``. Raises RuntimeError
+    if the file or the robot's section is missing.
+    """
+    import yaml
+    from ament_index_python.packages import get_package_share_directory
+
+    path = os.path.join(
+        get_package_share_directory("tiago_control_node"), "config", "home_poses.yaml"
+    )
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+    except OSError as e:
+        raise RuntimeError(f"Could not read home poses at {path}: {e}") from e
+
+    key = "pro" if robot_model == "pro" else "dual"
+    poses = data.get(key)
+    if not poses:
+        raise RuntimeError(f"home_poses.yaml has no '{key}' section ({path})")
+    return poses
+
+
+# Tikhonov regularisation for the iHQP solver. Large on purpose: keeps the
+# hierarchy well-conditioned and joint velocities small near singularities, at
+# the cost of some tracking accuracy.
+EPS_REGULARISATION = 1e10
+
+
+def q_index_map(model) -> dict:
+    """joint name -> start index in the configuration vector q.
+
+    q = [3 base translation][4 base quaternion] then one slot per DOF, except
+    continuous 'wheel' joints which use 2 slots (cos, sin). Use this for anything
+    that indexes into getJointPosition() / the q vector.
+    """
+    idx, out = 7, {}
+    for name in model.getJointNames():
+        if name == "reference":
+            continue
+        out[name] = idx
+        idx += 2 if "wheel" in name else 1
+    return out
+
+
+def v_index_map(model) -> dict:
+    """joint name -> index in velocity space.
+
+    Covers dq and the nv-sized vectors from getJointLimits() / getVelocityLimits():
+    6 floating-base DOF, then 1 per joint (continuous 'wheel' joints are 1 DOF here,
+    unlike in q).
+    """
+    idx, out = 6, {}
+    for name in model.getJointNames():
+        if name == "reference":
+            continue
+        out[name] = idx
+        idx += 1
+    return out
 
 
 collision_list = {
@@ -72,46 +137,6 @@ collision_list = {
     ("torso_fixed_column_link", "arm_left_5_link"),
     ("torso_fixed_column_link", "arm_left_4_link"),
     ("torso_fixed_column_link", "arm_left_3_link"),
-
 }
 
-home_config = [0., 0., 0., .0, 0., 0., 1., # floating_base
-     np.cos(0.), np.sin(0.),     # 'wheel_front_left_joint'
-     np.cos(0.), np.sin(0.),     # 'wheel_front_right_joint'
-     np.cos(0.), np.sin(0.),     # 'wheel_rear_left_joint'
-     np.cos(0.), np.sin(0.),     # 'wheel_rear_right_joint'
-     0.21,                # 'torso_lift_joint'
-     0.08, 1.04, 1.01, 2.35, 1.11, 0.12, 1.11, # 'arm_left_1_joint', 'arm_left_2_joint', 'arm_left_3_joint', 'arm_left_4_joint', 'arm_left_5_joint', 'arm_left_6_joint', 'arm_left_7_joint'
-     0.08, 1.04, 1.01, 2.35, 1.11, 0.12, 1.11, # 'arm_right_1_joint', 'arm_right_2_joint', 'arm_right_3_joint', 'arm_right_4_joint', 'arm_right_5_joint', 'arm_right_6_joint', 'arm_right_7_joint'
-     0., 0.] # 'head_1_joint', 'head_2_joint'
-
-tiago_pro_home_config = [0., 0., 0., .0, 0., 0., 1., # floating_base
-     np.cos(0.), np.sin(0.),     # 'wheel_front_left_joint'
-     np.cos(0.), np.sin(0.),     # 'wheel_front_right_joint'
-     np.cos(0.), np.sin(0.),     # 'wheel_rear_left_joint'
-     np.cos(0.), np.sin(0.),     # 'wheel_rear_right_joint'
-     0.35,                # 'torso_lift_joint'
-     0.36, -1.83, 0.47, -2.35, 0.0, 0.0, 0.0, # 'arm_left_1_joint', 'arm_left_2_joint', 'arm_left_3_joint', 'arm_left_4_joint', 'arm_left_5_joint', 'arm_left_6_joint', 'arm_left_7_joint'
-     -0.36, -1.83, -0.47, -2.35, 0.0, 0.0, 0.0, # 'arm_right_1_joint', 'arm_right_2_joint', 'arm_right_3_joint', 'arm_right_4_joint', 'arm_right_5_joint', 'arm_right_6_joint', 'arm_right_7_joint'
-     0., 0.] # 'head_1_joint', 'head_2_joint'
-
-
-
-# Dictionaries for the Action Controllers (cartesian_interface_node)
-HOME_CONFIG_DUAL = {
-    'torso': [0.21],
-    'arm_left': [0.08, 1.04, 1.01, 2.35, 1.11, 0.12, 1.11],
-    'arm_right': [0.08, 1.04, 1.01, 2.35, 1.11, 0.12, 1.11],
-    'head': [0.0, 0.0]
-}
-
-# NOTE: If the real Tiago Pro has 8-DoF arms or different joints,
-# update these arrays to match the physical hardware!
-HOME_CONFIG_PRO = {
-    'torso': [0.32],
-    'arm_left': [0.77, -1.83, 0.47, -2.35, 0.0, -0.08, -0.42],
-    'arm_right': [-0.77, -1.83, -0.47, -2.35, 0.0, -0.08, 0.42],
-    'head': [0.0, -0.67]
-}
-
-DT = 1.0/100.0
+# Named home poses moved to config/home_poses.yaml -- use load_home_poses().

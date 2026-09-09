@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, devel-dionisis]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx install ruff==0.2.2   # keep in sync with ruff.toml expectations
+      - run: ruff check .
+      - run: ruff format --check .
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      # Prebuilt dependency stack (ROS + Pinocchio + xbot2 + OpenSoT + solvers).
+      # See .ci/Dockerfile.base for how this image is produced.
+      image: dtotsila/tiago_wbc_ros2
+      options: --entrypoint ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        # Into the same interpreter colcon test will use (the entrypoint's venv).
+        run: /entrypoint.sh bash -c 'python3 -m pytest --version || python3 -m pip install --no-cache-dir pytest'
+
+      - name: colcon build
+        run: |
+          /entrypoint.sh bash -c '
+            set -e   # NOT -u: colcon setup.bash references $COLCON_TRACE unguarded
+            colcon build --packages-select tiago_control_node \
+              --cmake-args -DCMAKE_BUILD_TYPE=Release
+          '
+
+      - name: colcon test
+        run: |
+          /entrypoint.sh bash -c '
+            set -e
+            source install/setup.bash
+            colcon test --packages-select tiago_control_node --event-handlers console_direct+
+            colcon test-result --verbose
+          '
