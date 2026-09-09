@@ -26,14 +26,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install test dependencies
-        run: |
-          (apt-get update && apt-get install -y --no-install-recommends python3-pytest) \
-            || pip3 install --no-cache-dir pytest
+        # Into the same interpreter colcon test will use (the entrypoint's venv).
+        run: /entrypoint.sh bash -c 'python3 -m pytest --version || python3 -m pip install --no-cache-dir pytest'
 
       - name: colcon build
         run: |
           /entrypoint.sh bash -c '
-            set -euo pipefail
+            set -e   # NOT -u: colcon setup.bash references $COLCON_TRACE unguarded
             colcon build --packages-select tiago_control_node \
               --cmake-args -DCMAKE_BUILD_TYPE=Release
           '
@@ -41,7 +40,7 @@ jobs:
       - name: colcon test
         run: |
           /entrypoint.sh bash -c '
-            set -euo pipefail
+            set -e
             source install/setup.bash
             colcon test --packages-select tiago_control_node --event-handlers console_direct+
             colcon test-result --verbose

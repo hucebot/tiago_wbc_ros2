@@ -88,6 +88,7 @@ class TiagoOpenSoTNode(Node):
         self.active_collisions = {}
         self.is_paused = False
         self.gaze_locked = True
+        self.home_settle_until = 0.0  # ignore incoming arm targets until this time
 
         # Homing States
         self.homing_active = False
@@ -175,10 +176,12 @@ class TiagoOpenSoTNode(Node):
         self.is_paused = msg.data
 
     def _right_target_cb(self, msg: PoseStamped):
-        self.target_right = msg
+        if time.perf_counter() >= self.home_settle_until:
+            self.target_right = msg
 
     def _left_target_cb(self, msg: PoseStamped):
-        self.target_left = msg
+        if time.perf_counter() >= self.home_settle_until:
+            self.target_left = msg
 
     def _base_target_cb(self, msg: Twist):
         self.target_base_twist = msg
@@ -474,6 +477,15 @@ def sync_external_collisions(node: TiagoOpenSoTNode, collision_avoidance: Collis
             collision_avoidance.setCollisionShapeActive(obj_id, node.enable_external_obstacle)
 
 
+def _hold_cartesian(task, model, frame, base):
+    """Pin a Cartesian task's reference to the frame's current pose, zero twist."""
+    cur = model.getPose(frame, base)
+    ref = task.getReference()[0]
+    ref.translation = cur.translation
+    ref.linear = cur.linear
+    task.setReference(ref, np.zeros(6))
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = TiagoOpenSoTNode()
@@ -527,49 +539,64 @@ def main(args=None):
                 tasks["gaze"].setGaze(T_target)
 
             # --- NATIVE HOMING PROCEDURE ---
+            # Steer q_homing, postural AND both arm Cartesian references to the
+            # same interpolated config every tick. Every task then pulls the same
+            # way, so there is no priority fight and no completion handoff: when
+            # the interpolation ends everything is already at the home config.
             if node.homing_active:
                 if not node.is_currently_homing:
                     node.is_currently_homing = True
-                    node.get_logger().info("Starting native OpenSoT homing with interpolation...")
-
-                    tasks["left"].setLambda(0.0)
-                    tasks["right"].setLambda(0.0)
-                    tasks["gaze"].setLambda(0.0)
+                    node.get_logger().info("Starting native OpenSoT homing...")
                     node.target_base_twist = Twist()
 
-                    # Save start state and setup full target state
                     node.homing_start_time = time.perf_counter()
                     node.homing_start_q = np.copy(q)
                     node.homing_target_q_full = np.copy(q)
-
                     for name, idx in q_index_map(model).items():
                         if name in node.homing_target_q and idx < len(node.homing_target_q_full):
                             node.homing_target_q_full[idx] = node.homing_target_q[name]
 
                     tasks["q_homing"].setWeight(0.5)
-                    # High lambda so it aggressively tracks the moving setpoint
                     tasks["q_homing"].setLambda(0.1)
+                    tasks["postural"].setLambda(0.1)
+                    tasks["gaze"].setLambda(0.0)
 
-                # --- Interpolate trajectory ---
+                # Reject stale arm targets during homing and for 0.5 s after.
+                node.home_settle_until = time.perf_counter() + 0.5
+                node.target_right = None
+                node.target_left = None
+
                 elapsed_home = time.perf_counter() - node.homing_start_time
-                s = np.clip(elapsed_home / node.homing_duration, 0.0, 1.0)
-
-                # Linear: constant speed from start to finish
+                s = float(np.clip(elapsed_home / node.homing_duration, 0.0, 1.0))
                 q_ref_interp = node.homing_start_q + s * (
                     node.homing_target_q_full - node.homing_start_q
                 )
-                tasks["q_homing"].setReference(q_ref_interp)
 
-                # Track homing tolerance progress
+                tasks["q_homing"].setReference(q_ref_interp)
+                tasks["postural"].setReference(q_ref_interp)
+
+                # Move the arm Cartesian references onto the FK of the interpolated
+                # config so tier 1 pulls the same way q_homing does.
+                model.setJointPosition(q_ref_interp)
+                model.update()
+                for tkey, frame, base in (
+                    ("left", node.frame_left, node.base_left_arm),
+                    ("right", node.frame_right, node.base_right_arm),
+                ):
+                    ee = model.getPose(frame, base)
+                    ref = tasks[tkey].getReference()[0]
+                    ref.translation = ee.translation
+                    ref.linear = ee.linear
+                    tasks[tkey].setReference(ref, np.zeros(6))
+                model.setJointPosition(q)
+                model.update()
+
                 q_err = 0.0
                 for name, idx in q_index_map(model).items():
                     if name in node.homing_target_q and idx < len(q):
                         q_err += (q[idx] - node.homing_target_q[name]) ** 2
                 q_err = np.sqrt(q_err)
 
-                # Finish once the interpolation has elapsed AND (error is low OR we hit the
-                # settle timeout). Previously this only checked the timeout, so homing never
-                # completed early and always logged "timed out".
                 converged = q_err < node.homing_tol
                 time_limit_exceeded = elapsed_home > (node.homing_duration + node.homing_settle)
 
@@ -584,27 +611,24 @@ def main(args=None):
                     node.homing_active = False
                     node.is_currently_homing = False
 
-                    tasks["left"].reset()
-                    tasks["right"].reset()
-
-                    # Reset the postural task to current joints so it doesn't jump backwards!
-                    tasks["postural"].setReference(q)
-                    tasks["postural"].setLambda(0.1)
-
-                    tasks["left"].setLambda(node.l_left)
-                    tasks["right"].setLambda(node.l_right)
-                    tasks["gaze"].setLambda(0.1)
+                    # No handoff: every reference is already at the home config.
                     tasks["q_homing"].setWeight(0.0)
-
                     node.target_right = None
                     node.target_left = None
+
+                    _ee = model.getPose(node.frame_right, node.base_right_arm)
+                    node.get_logger().info(
+                        f"[post-home] completion r_ee=({_ee.translation[0]:.3f}, "
+                        f"{_ee.translation[1]:.3f}, {_ee.translation[2]:.3f})  q_err={q_err:.3f}"
+                    )
+                    node._post_home_until = time.perf_counter() + 2.0
 
                     node.home_done_pub.publish(Bool(data=True))
             else:
                 # ONLY evaluate cartesian goals when NOT homing
-                for target_msg, task in [
-                    (node.target_right, tasks["right"]),
-                    (node.target_left, tasks["left"]),
+                for target_msg, task, frame, base in [
+                    (node.target_right, tasks["right"], node.frame_right, node.base_right_arm),
+                    (node.target_left, tasks["left"], node.frame_left, node.base_left_arm),
                 ]:
                     if target_msg is not None:
                         p_ref = task.getReference()[0]
@@ -623,7 +647,8 @@ def main(args=None):
                         ).as_matrix()
                         task.setReference(p_ref, np.zeros(6))
                     else:
-                        task.reset()
+                        # No target -> hold exactly here (reset() drifts in this build).
+                        _hold_cartesian(task, model, frame, base)
 
             # Gaze Task (ONLY update lambda if we are NOT homing!)
             if not node.homing_active:
@@ -663,6 +688,20 @@ def main(args=None):
                 node.get_logger().error(f"Solver fail: {e}", throttle_duration_sec=1.0)
 
             q = model.sum(q, dq)
+
+            if time.perf_counter() < getattr(node, "_post_home_until", 0.0):
+                model.setJointPosition(q)
+                model.update()
+                _ee = model.getPose(node.frame_right, node.base_right_arm)
+                _e = 0.0
+                for _n, _i in qidx.items():
+                    if _n in node.homing_target_q and _i < len(q):
+                        _e += (q[_i] - node.homing_target_q[_n]) ** 2
+                node.get_logger().info(
+                    f"[post-home] r_ee=({_ee.translation[0]:.3f}, {_ee.translation[1]:.3f}, "
+                    f"{_ee.translation[2]:.3f})  q_err={_e ** 0.5:.3f}  |dq|={np.linalg.norm(dq):.4f}",
+                    throttle_duration_sec=0.1,
+                )
 
             solver_halted = solver_fail_streak >= SOLVER_FAIL_LIMIT
             if solver_halted and solver_fail_streak == SOLVER_FAIL_LIMIT:

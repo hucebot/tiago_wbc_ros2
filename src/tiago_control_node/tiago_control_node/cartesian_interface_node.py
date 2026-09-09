@@ -48,6 +48,8 @@ class CartesianInterface(Node):
         self.replay_poses = {"right": None, "left": None}
         self.marker_poses = {}
         self._fk_cache = {}  # last good FK pose per side (fallback on a TF miss)
+        self.marker_reset_timer = None  # one-shot: deferred marker snap after homing
+        self._marker_reset_tries = 0
         self.task_enabled = {"right": True, "left": True}
         self.is_pressed = {"right": False, "left": False}
 
@@ -114,6 +116,7 @@ class CartesianInterface(Node):
         # self.create_subscription(Bool, "/opensot/reset_complete", self._reset_complete_cb, 1)
 
         self.create_subscription(Bool, "/opensot/home_done", self._home_done_cb, 10)
+        self.create_subscription(String, "/opensot/home_cmd", self._home_cmd_cb, 10)
         for side in ["right", "left"]:
             self.create_subscription(
                 PoseStamped,
@@ -218,24 +221,27 @@ class CartesianInterface(Node):
         self.get_logger().info("Cartesian Interface Node Initialized (Native Homing Forwarder)")
 
     def _home_done_cb(self, msg: Bool) -> None:
-        if msg.data:
-            self.get_logger().info(
-                "Homing finished! Snapping markers to new home pose and disabling tasks."
-            )
-            # 1. Stop publishing commands
-            self.task_enabled = {"right": False, "left": False}
-            self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
-            self.menu_handler.reApply(self.server)
+        if not msg.data:
+            return
+        self.get_logger().info("Homing finished! Disabling tasks; markers snap once TF settles.")
 
-            # 2. Clear cached poses
-            for side in ["right", "left"]:
-                self.vive_poses[side] = None
-                self.replay_poses[side] = None
-                self.pose_synced[side] = False
-                # 3. Snap markers in RViz to where the hands actually are right now
-                self._reset_marker(side)
+        # 1. Stop publishing commands right away.
+        self.task_enabled = {"right": False, "left": False}
+        self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
+        self.menu_handler.reApply(self.server)
+        self.server.applyChanges()
 
-            self.server.applyChanges()
+        # 2. Clear cached teleop poses.
+        for side in ["right", "left"]:
+            self.vive_poses[side] = None
+            self.replay_poses[side] = None
+            self.pose_synced[side] = False
+
+        # 3. Defer the marker snap. Snapping now reads the opensot/ TF mid-homing
+        #    (RSP republishes at 50 Hz); a short delay lets it reach the final pose.
+        if self.marker_reset_timer is not None:
+            self.destroy_timer(self.marker_reset_timer)
+        self.marker_reset_timer = self.create_timer(0.5, self._execute_delayed_marker_reset)
 
     def _osot(self, frame_id: str) -> str:
         clean_frame = frame_id.replace("opensot/", "").lstrip("/")
@@ -245,27 +251,41 @@ class CartesianInterface(Node):
         if msg.data:
             self.get_logger().info("OpenSoT Reset Confirmed. Unmuting OpenSoT...")
             self.pub_pause_opensot.publish(Bool(data=False))
+            if self.marker_reset_timer is not None:
+                self.destroy_timer(self.marker_reset_timer)
             self.marker_reset_timer = self.create_timer(0.5, self._execute_delayed_marker_reset)
 
-    def _home_service_cb(self, request, response, target_config_name) -> Trigger.Response:
-        self.get_logger().info(f"Homing Sequence Initiated natively for {target_config_name}...")
+    def _begin_homing(self, target_name: str) -> None:
+        """Stop commanding the arms + clear cached teleop poses.
 
-        # UI and State cleanup
+        Runs from BOTH the home_position/<name> service and directly off
+        /opensot/home_cmd, so homing triggered by a raw topic publish (not the
+        service) still stops us feeding the solver a stale marker target.
+        """
+        self.get_logger().info(f"Homing initiated ({target_name}); disabling task output.")
         self.task_enabled = {"right": False, "left": False}
         self.menu_handler.setCheckState(self.enable_entry, MenuHandler.UNCHECKED)
         self.menu_handler.reApply(self.server)
         self.server.applyChanges()
+
+        # Drop any pending marker-reset from a previous home.
+        if self.marker_reset_timer is not None:
+            self.destroy_timer(self.marker_reset_timer)
+            self.marker_reset_timer = None
 
         for side in ["right", "left"]:
             self.vive_poses[side] = None
             self.replay_poses[side] = None
             self.pose_synced[side] = False
 
-        # Send command to OpenSoT Node directly
+    def _home_cmd_cb(self, msg: String) -> None:
+        self._begin_homing(msg.data)
+
+    def _home_service_cb(self, request, response, target_config_name) -> Trigger.Response:
+        self._begin_homing(target_config_name)
         msg = String()
         msg.data = target_config_name
         self.pub_home_cmd.publish(msg)
-
         response.success = True
         response.message = f"Homing '{target_config_name}' commanded to OpenSoT native loop."
         return response
@@ -292,11 +312,42 @@ class CartesianInterface(Node):
             self.server.applyChanges()
 
     def _execute_delayed_marker_reset(self) -> None:
-        self.marker_reset_timer.cancel()
+        # Snap the markers onto the end effectors -- but only once the opensot/ TF
+        # has actually caught up to the post-homing pose (RSP republishes it at
+        # 50 Hz). Retry every 0.2 s until the transform is fresh (< 0.2 s old).
+        if self.marker_reset_timer is not None:
+            self.destroy_timer(self.marker_reset_timer)
+            self.marker_reset_timer = None
+
+        poses, max_age, missing = {}, 0.0, False
         for side in ["right", "left"]:
+            p, age = self._fk_transform(side)
+            if p is None:
+                missing = True
+                break
+            poses[side] = p
+            if age is not None:
+                max_age = max(max_age, age)
+
+        if (missing or max_age > 0.2) and self._marker_reset_tries < 8:
+            self._marker_reset_tries += 1
+            self.marker_reset_timer = self.create_timer(0.2, self._execute_delayed_marker_reset)
+            return
+
+        self._marker_reset_tries = 0
+        for side, p in poses.items():
             self.vive_poses[side] = None
             self.replay_poses[side] = None
-            self._reset_marker(side)
+            self.pose_synced[side] = False
+            self.marker_poses[side] = p
+            self._fk_cache[side] = p
+            self.server.setPose(side, p)
+            self.get_logger().info(
+                f"Homing: {side} marker -> "
+                f"({p.position.x:.3f}, {p.position.y:.3f}, {p.position.z:.3f}) "
+                f"[tf age {max_age * 1000:.0f} ms]"
+            )
+        self.server.applyChanges()
 
     def _pose_cb(self, source: str, side: str, msg: PoseStamped) -> None:
         if source == "vive":
@@ -370,6 +421,27 @@ class CartesianInterface(Node):
             if self.tf_buffer.can_transform(base_frame, target_frame, rclpy.time.Time()):
                 break
             rclpy.spin_once(self, timeout_sec=0.1)
+
+    def _fk_transform(self, side: str):
+        """Latest opensot/ FK for `side` as (Pose, age_s), or (None, None) on a TF miss."""
+        base_frame = self._osot(self.frames[f"base_{side}"])
+        target_frame = self._osot(self.frames[side])
+        try:
+            t = self.tf_buffer.lookup_transform(base_frame, target_frame, rclpy.time.Time())
+        except TransformException:
+            return None, None
+        p = Pose()
+        p.position.x = t.transform.translation.x
+        p.position.y = t.transform.translation.y
+        p.position.z = t.transform.translation.z
+        p.orientation = t.transform.rotation
+        try:
+            clk = self.get_clock()
+            stamp = rclpy.time.Time.from_msg(t.header.stamp, clock_type=clk.clock_type)
+            age = (clk.now() - stamp).nanoseconds / 1e9
+        except (ValueError, TypeError):
+            age = None
+        return p, age
 
     def _get_fk_pose(self, side: str) -> Pose:
         base_frame = self._osot(self.frames[f"base_{side}"])
