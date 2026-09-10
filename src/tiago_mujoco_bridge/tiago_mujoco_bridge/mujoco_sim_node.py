@@ -14,9 +14,11 @@ from sensor_msgs.msg import JointState
 
 
 MENAGERIE_ROOT = "/home/forest_ws/external/mujoco_menagerie"
+ROBOTS_ROOT = "/home/forest_ws/robots"
+
 
 MODEL_PATHS = {
-    "pro": os.path.join(MENAGERIE_ROOT, "pal_tiago", "scene_position.xml"),
+    "pro": os.path.join(ROBOTS_ROOT, "pal_tiago_pro", "xmls", "scene_tiago_pro.xml"),
     "dual": os.path.join(MENAGERIE_ROOT, "pal_tiago_dual", "scene_position.xml"),
 }
 

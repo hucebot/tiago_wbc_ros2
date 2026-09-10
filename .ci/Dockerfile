@@ -10,6 +10,7 @@ FROM dtotsila/tiago_wbc_ros2 AS dep
 # Copy source code into the image
 COPY ./src /home/forest_ws/src
 COPY ./external/mujoco_menagerie /home/forest_ws/external/mujoco_menagerie
+COPY ./robots /home/forest_ws/robots
 
 # Build ROS 2 Package
 WORKDIR /home/forest_ws
