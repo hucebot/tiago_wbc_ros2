@@ -28,6 +28,13 @@ export LD_LIBRARY_PATH="/home/forest_ws/install/lib/roboptim-core:/home/forest_w
 # CycloneDDS auto-configuration. Single owner of CYCLONEDDS_URI: picks
 # /home/configs/cyclonedds_<DDS_ENV>.xml (mounted from ./configs) if it exists.
 DDS_ENV="${DDS_ENV:-local}"
+USE_SIM="${USE_SIM:-false}"
+
+if [ "$DDS_ENV" = "robot" ] && [ "$USE_SIM" = "true" ]; then
+    echo "[Entrypoint] ERROR: USE_SIM=true is not allowed with DDS_ENV=robot."
+    echo "[Entrypoint] MuJoCo must run with DDS_ENV=local."
+    exit 1
+fi
 DDS_PROFILE="/home/configs/cyclonedds_${DDS_ENV}.xml"
 if [ -f "$DDS_PROFILE" ]; then
     export CYCLONEDDS_URI="file://${DDS_PROFILE}"
@@ -35,6 +42,8 @@ if [ -f "$DDS_PROFILE" ]; then
 else
     echo "[Entrypoint] No CycloneDDS profile for DDS_ENV='${DDS_ENV}' (${DDS_PROFILE} missing); using DDS defaults"
 fi
+
+DDS_ENV=robot USE_SIM=true ...
 
 # Execute the command passed to the container
 exec "$@"

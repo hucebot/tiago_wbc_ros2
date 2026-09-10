@@ -50,11 +50,31 @@ tiago: xhost
 tiago-pro: xhost
 	ROBOT_MODEL=pro docker compose up opensot_deploy
 
-# Same as `tiago-pro`; honours ROBOT_MODEL if you export it yourself.
+# # Physical robots
+# tiago: xhost
+# 	DDS_ENV=robot ROBOT_MODEL=dual USE_SIM=false docker compose up opensot_deploy
+
+# tiago-pro: xhost
+# 	DDS_ENV=robot ROBOT_MODEL=pro USE_SIM=false docker compose up opensot_deploy
+
+# MuJoCo simulation
+mj-tiago: xhost
+	DDS_ENV=local ROBOT_MODEL=dual USE_SIM=true docker compose up opensot_deploy
+
+mj-tiago-pro: xhost
+	DDS_ENV=local ROBOT_MODEL=pro USE_SIM=true docker compose up opensot_deploy
+
+# Local stack without a robot backend
+local-tiago: xhost
+	DDS_ENV=local ROBOT_MODEL=dual USE_SIM=false docker compose up opensot_deploy
+
+local-tiago-pro: xhost
+	DDS_ENV=local ROBOT_MODEL=pro USE_SIM=false docker compose up opensot_deploy
+
+
 deploy: xhost
 	docker compose up opensot_deploy
 
-# Builds the production image (targets 'dep' stage in Dockerfile)
 build-deploy:
 	@echo "Building production image: $(IMAGE_NAME)"
 	docker build --target dep -t $(IMAGE_NAME) -f .ci/Dockerfile .

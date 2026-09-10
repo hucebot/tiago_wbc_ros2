@@ -14,6 +14,7 @@ x-shared-config: &shared-config
     - ROS_DOMAIN_ID=2
     - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
     - DDS_ENV=${DDS_ENV:-local}
+    - USE_SIM=${USE_SIM:-false}
     # CYCLONEDDS_URI is set by .ci/entrypoint.sh from DDS_ENV (single owner).
 
 services:
@@ -25,9 +26,7 @@ services:
     <<: *shared-config
     image: tiago_wbc_ros2:${TAG:-latest}
     container_name: opensot_deploy_instance
-    command: ros2 launch tiago_control_node bringup.launch.py robot_model:=${ROBOT_MODEL:-pro}
+    command: ros2 launch tiago_control_node bringup.launch.py robot_model:=${ROBOT_MODEL:-pro} use_sim:=${USE_SIM:-false}
     volumes:
-      # X11 socket only -- not all of /tmp. If RViz/Ogre complains about a cache
-      # dir it just recreates one inside the container.
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./configs/:/home/configs:ro

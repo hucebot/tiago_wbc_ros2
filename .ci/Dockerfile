@@ -9,11 +9,12 @@ FROM dtotsila/tiago_wbc_ros2 AS dep
 
 # Copy source code into the image
 COPY ./src /home/forest_ws/src
+COPY ./external/mujoco_menagerie /home/forest_ws/external/mujoco_menagerie
 
 # Build ROS 2 Package
 WORKDIR /home/forest_ws
 RUN source /opt/ros/humble/setup.bash && source /home/forest_ws/setup.bash && \
-    colcon build --parallel-workers 2 --packages-select tiago_control_node --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+    colcon build --parallel-workers 2 --packages-select tiago_control_node tiago_mujoco_bridge --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log
 
 # Runtime Setup

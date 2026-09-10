@@ -92,7 +92,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /tiago_pro/opensot/viz/collision_distances
+        Value: opensot/viz/collision_distances
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
@@ -105,12 +105,12 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /tiago_pro/opensot/viz/active_collisions
+        Value: opensot/viz/active_collisions
       Value: true
     - Class: rviz_default_plugins/InteractiveMarkers
       Enable Transparency: true
       Enabled: true
-      Interactive Markers Namespace: /tiago_pro/six_dof_marker_server
+      Interactive Markers Namespace: six_dof_marker_server
       Name: InteractiveMarkers
       Show Axes: false
       Show Descriptions: true

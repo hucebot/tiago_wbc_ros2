@@ -23,6 +23,13 @@ def generate_launch_description():
     is_pro = LaunchConfigurationEquals("robot_model", "pro")
     is_dual = LaunchConfigurationNotEquals("robot_model", "pro")
 
+    use_sim_arg = DeclareLaunchArgument(
+        "use_sim", default_value="false", description="Launch the MuJoCo simulated robot",
+    )
+
+    use_sim = LaunchConfiguration("use_sim")
+    is_sim = LaunchConfigurationEquals("use_sim", "true")
+
     # ROS namespace for the app nodes (both solvers + the cartesian interface).
     # Defaults to 'tiago_pro' / 'tiago' from robot_model so two stacks can share a
     # DDS graph without colliding. The robot_state_publishers, RViz, the static TF
@@ -152,6 +159,15 @@ def generate_launch_description():
         parameters=[config_path, robot_description, {"robot_model": robot_model}],
     )
 
+    node_mujoco = Node(
+        package="tiago_mujoco_bridge",
+        executable="mujoco_sim_node",
+        name="mujoco_sim_node",
+        output="screen",
+        parameters=[{"robot_model": robot_model}],
+        condition=is_sim,
+    )
+
     # App nodes go under `namespace`; the RSPs / RViz / static TF above stay global.
     delayed_nodes = TimerAction(
         period=2.0,
@@ -162,10 +178,13 @@ def generate_launch_description():
                     node_solver_dual,
                     node_solver_pro,
                     node_cartesian_interface,
+                    node_rviz
                 ]
             )
         ],
     )
+
+    
 
     # Final Launch Description
     return LaunchDescription(
@@ -175,7 +194,7 @@ def generate_launch_description():
             node_tf_bridge_opensot,
             node_real_rsp,
             node_opensot_rsp,
-            node_rviz,
+            node_mujoco,
             delayed_nodes,
         ]
     )
