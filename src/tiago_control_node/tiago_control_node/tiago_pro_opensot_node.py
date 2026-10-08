@@ -425,13 +425,35 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
     # Restrict external obstacle avoidance to arms and grippers, with 0.5m detection radius
+    # All arm and gripper links (including fingers)
     env_links = {
-        f"arm_left_{i}_link" for i in range(1, 8)
-    } | {
-        f"arm_right_{i}_link" for i in range(1, 8)
-    } | {
-        "gripper_left_base_link", "gripper_right_base_link"
+        link
+        for link in [
+            f"arm_left_{i}_link" for i in range(1, 8)
+        ] + [
+            f"arm_right_{i}_link" for i in range(1, 8)
+        ] + [
+            "gripper_left_base_link",
+            "gripper_left_base_finger_left_link",
+            "gripper_left_base_finger_right_link",
+            "gripper_left_fingertip_left_link",
+            "gripper_left_fingertip_right_link",
+            "gripper_left_inner_finger_left_link",
+            "gripper_left_inner_finger_right_link",
+            "gripper_left_outer_finger_left_link",
+            "gripper_left_outer_finger_right_link",
+            "gripper_right_base_link",
+            "gripper_right_base_finger_left_link",
+            "gripper_right_base_finger_right_link",
+            "gripper_right_fingertip_left_link",
+            "gripper_right_fingertip_right_link",
+            "gripper_right_inner_finger_left_link",
+            "gripper_right_inner_finger_right_link",
+            "gripper_right_outer_finger_left_link",
+            "gripper_right_outer_finger_right_link",
+        ]
     }
+
     collision_avoidance.setLinksVsEnvironment(env_links)
     collision_avoidance.setDetectionThreshold(0.5)
 
