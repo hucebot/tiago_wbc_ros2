@@ -424,6 +424,17 @@ def setup_opensot_stack(model: xbi.ModelInterface2, node: TiagoOpenSoTNode):
     ]
     collision_avoidance.setCollisionList(set(pro_collision_list))
 
+    # Restrict external obstacle avoidance to arms and grippers, with 0.5m detection radius
+    env_links = {
+        f"arm_left_{i}_link" for i in range(1, 8)
+    } | {
+        f"arm_right_{i}_link" for i in range(1, 8)
+    } | {
+        "gripper_left_base_link", "gripper_right_base_link"
+    }
+    collision_avoidance.setLinksVsEnvironment(env_links)
+    collision_avoidance.setDetectionThreshold(0.5)
+
     top = g_left + g_right + base % [0, 1, 5] + q_homing
     if gaze is not None:
         top = top + gaze
